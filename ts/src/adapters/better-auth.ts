@@ -83,7 +83,8 @@ export function makeBetterAuth(cfg: IdentityConfig) {
           const p = await verifyJwsAccessToken(token, { jwksFetch, jwksCacheKey, verifyOptions: { issuer, audience: cfg.apiResource } })
           const scopes = typeof p.scope === 'string' ? p.scope.split(' ') : []
           const clientId = typeof p.azp === 'string' ? p.azp : typeof p.client_id === 'string' ? p.client_id : undefined
-          if (!clientId || p.sub) return null // user-delegated tokens are not used in this spike
+          // client_credentials tokens carry sub = client_id; anything else would be user-delegated (unused here)
+          if (!clientId || (p.sub && p.sub !== clientId)) return null
           return { type: 'client', clientId, scopes }
         } catch {
           return null

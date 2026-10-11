@@ -16,7 +16,7 @@ resourcePolicy:
   resource: store
   constants:
     local:
-      storeActions: ["role.manage", "store.view", "product.create", "product.update", "product.view", "order.view", "order.cancel", "order.refund", "payment.capture", "payment.view", "shipment.create", "shipment.update", "shipment.view", "app.install", "app.uninstall", "app.view", "agent.grant"]
+      storeActions: ["merchant.view", "merchant.update", "member.manage", "store.create", "role.manage", "store.view", "product.create", "product.update", "product.view", "order.view", "order.cancel", "order.refund", "payment.capture", "payment.view", "shipment.create", "shipment.update", "shipment.view", "app.install", "app.uninstall", "app.view", "agent.grant"]
       neverForApps: ["role.manage", "member.manage", "agent.grant", "app.install", "app.uninstall"]
   variables:
     local:
@@ -68,6 +68,13 @@ resourcePolicy:
       output:
         when:
           ruleActivated: '"merchant_suspended"'
+
+    # --- merchant-scope permissions "held at a store" (guardrail for store-scoped assignments of
+    #     roles such as staff, which include merchant.view; conformance AMBIGUITIES #3) ---
+    - { name: merchant_view,   actions: ["merchant.view"],   effect: EFFECT_ALLOW, roles: ["user", "agent"], condition: { match: { expr: '"merchant.view" in V.granted' } } }
+    - { name: merchant_update, actions: ["merchant.update"], effect: EFFECT_ALLOW, roles: ["user", "agent"], condition: { match: { expr: '"merchant.update" in V.granted' } } }
+    - { name: member_manage,   actions: ["member.manage"],   effect: EFFECT_ALLOW, roles: ["user", "agent"], condition: { match: { expr: '"member.manage" in V.granted' } } }
+    - { name: store_create,    actions: ["store.create"],    effect: EFFECT_ALLOW, roles: ["user", "agent"], condition: { match: { expr: '"store.create" in V.granted' } } }
 
     # --- one rule per store-scoped permission; V.granted is the union for the caller's kind ---
     - { name: role_manage,     actions: ["role.manage"],     effect: EFFECT_ALLOW, roles: ["user", "app", "agent"], condition: { match: { expr: '"role.manage" in V.granted' } } }
