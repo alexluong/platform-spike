@@ -115,6 +115,19 @@ describe('platform staff have no access to merchant data without break-glass', (
   }
 })
 
+describe('platform staff listing a merchant\'s stores', () => {
+  for (const kind of ['platform_admin', 'support'] as const) {
+    test(`${kind} without break-glass → 403 (not an empty 200); with one → 200`, async () => {
+      const staff = kind === 'platform_admin' ? await platformAdmin() : await newSupport()
+      const { m, s } = await merchantWithStore()
+      expectDenied(await staff.api.get(`/api/merchants/${m.id}/stores`))
+      ok(await staff.api.post('/api/platform/break-glass', { merchantId: m.id, reason: 'stores', minutes: 5 }), 201)
+      const items = ok(await staff.api.get<{ items: { id: string }[] }>(`/api/merchants/${m.id}/stores`), 200).items
+      expect(items.map((x) => x.id)).toContain(s.id)
+    })
+  }
+})
+
 describe('suspended merchant', () => {
   test('users get 403 merchant_suspended on reads and writes; reinstate restores', async () => {
     const { m, s } = await merchantWithStore()

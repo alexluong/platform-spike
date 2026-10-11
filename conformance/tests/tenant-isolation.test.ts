@@ -1,6 +1,6 @@
 // SPEC §1.6 tenant isolation, §2 customers per store, §9 cross-tenant 403|404 (never 200).
 import { beforeAll, describe, expect, test } from 'vitest'
-import { expectDenied, expectStatus, ok, type Res } from '../src/client'
+import { expectDenied, expectError, expectStatus, ok, type Res } from '../src/client'
 import { FORBIDDEN_APP_SCOPES, STORE_SCOPE_ACTIONS } from '../src/catalog'
 import type { Assignment, ClientCreds, Grant, Install, Items, Order, Product, Role, Shipment, Store } from '../src/types'
 import {
@@ -138,6 +138,13 @@ describe('owner of merchant A against merchant B', () => {
     const res = await A.m.owner.api.post(`/api/merchants/${A.m.id}/role-assignments`, { userId: aMember.id, roleId: aRole.id, scope: storeScope(B.s) })
     expectStatus(res, 400, 403, 404)
     expectDenied(await aMember.api.get(`/api/stores/${B.s.id}/orders`), { crossTenant: true })
+  })
+
+  test('assignment scoped to B’s store → 404 not_found (hidden like any cross-tenant resource)', async () => {
+    const aRole = await A.m.role(['order.view'])
+    const aMember = await A.m.member()
+    const res = await A.m.owner.api.post(`/api/merchants/${A.m.id}/role-assignments`, { userId: aMember.id, roleId: aRole.id, scope: storeScope(B.s) })
+    expectError(res, 404, 'not_found')
   })
 
   test('cannot assign A’s role to a member of B (4xx)', async () => {

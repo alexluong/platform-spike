@@ -1,7 +1,7 @@
 // SPEC §6 agents: registration, grants (subset of the granter's permissions), expiry, revoke,
 // live dependency on the granting user's permissions, granting user's refund limit.
 import { describe, expect, test } from 'vitest'
-import { expectDenied, expectStatus, ok, sortedSet } from '../src/client'
+import { expectDenied, expectError, expectStatus, ok, sortedSet } from '../src/client'
 import type { ClientCreds, Grant } from '../src/types'
 import { clientActor, grantAgent, grantedAgent, merchantWithStore, newSupport, newUser, registerAgent, sleep, storeScope, uniq } from '../src/world'
 
@@ -188,6 +188,20 @@ describe('the granting user must still hold the action', () => {
     ok(await agent.api.get(`/api/stores/${s.id}/orders`), 200)
     expectStatus(await m.owner.api.delete(`/api/merchants/${m.id}/members/${u.id}`), 204)
     expectDenied(await agent.api.get(`/api/stores/${s.id}/orders`))
+  })
+})
+
+describe('grant check order', () => {
+  test('a non-grantable permission is 400 not_grantable even from a user who may not grant this agent', async () => {
+    const { m, s } = await merchantWithStore()
+    const u = await m.memberWithPerms(['order.view'], m.scope, { label: 'registrant' })
+    const creds = await registerAgent(u)
+    // the owner holds agent.grant but isn't the registrant (403); the body is checked first
+    const r = await m.owner.api.post(`/api/stores/${s.id}/agent-grants`, { agentId: creds.id, permissions: ['platform.merchant.view'], expiresInSeconds: 600 })
+    expectError(r, 400, 'not_grantable')
+    // with a valid body the registrant rule answers
+    const r2 = await m.owner.api.post(`/api/stores/${s.id}/agent-grants`, { agentId: creds.id, permissions: ['order.view'], expiresInSeconds: 600 })
+    expectDenied(r2)
   })
 })
 

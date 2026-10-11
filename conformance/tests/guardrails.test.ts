@@ -104,6 +104,39 @@ describe('permissions guardrail', () => {
   })
 })
 
+describe('unassign guardrail (same as assign)', () => {
+  test('unassigning a role with a permission the caller lacks → 403 escalation; the assignment stays', async () => {
+    const { m, s, mgr } = await withManager()
+    const r = await m.role(['order.view', 'order.refund'])
+    const u = await m.memberWithRole(r.id)
+    expectDenied(await mgr.api.delete(`/api/merchants/${m.id}/role-assignments/${u.assignment.id}`), ESC)
+    ok(await u.api.get(`/api/stores/${s.id}/orders`), 200)
+    expectStatus(await m.owner.api.delete(`/api/merchants/${m.id}/role-assignments/${u.assignment.id}`), 204)
+  })
+
+  test('unassigning a system role the caller doesn\'t fully hold (admin) → 403 escalation', async () => {
+    const { m, s, mgr } = await withManager()
+    const u = await m.memberWithRole('admin')
+    expectDenied(await mgr.api.delete(`/api/merchants/${m.id}/role-assignments/${u.assignment.id}`), ESC)
+    ok(await u.api.get(`/api/stores/${s.id}/orders`), 200)
+  })
+
+  test('unassigning a role whose limit is above the caller\'s own → 403 escalation', async () => {
+    const { m, mgr } = await withManager(['order.refund'], 500)
+    const r = await m.role(['order.refund'], 1000)
+    const u = await m.memberWithRole(r.id)
+    expectDenied(await mgr.api.delete(`/api/merchants/${m.id}/role-assignments/${u.assignment.id}`), ESC)
+  })
+
+  test('unassigning a role within the caller\'s own permissions → 204', async () => {
+    const { m, s, mgr } = await withManager()
+    const r = await m.role(['order.view'])
+    const u = await m.memberWithRole(r.id)
+    expectStatus(await mgr.api.delete(`/api/merchants/${m.id}/role-assignments/${u.assignment.id}`), 204)
+    expectDenied(await u.api.get(`/api/stores/${s.id}/orders`))
+  })
+})
+
 describe('refund limit guardrail', () => {
   test('limited manager: can create a role at or below its own limit', async () => {
     const { m, mgr } = await withManager(['order.refund'], 1000)

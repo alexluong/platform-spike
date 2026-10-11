@@ -9,7 +9,7 @@ A mini Shopify (merchants with custom roles, customers, platform staff, apps, AI
 | `c` | TypeScript (Hono) | Better Auth | Cerbos | 8083 |
 
 - Spec: [`spec/SPEC.md`](spec/SPEC.md)
-- Test suite: `conformance/` (349 tests; all three stacks pass)
+- Test suite: `conformance/` (362 tests; all three stacks pass)
 - Per-stack results: `results/<stack>.md`
 
 ## Run

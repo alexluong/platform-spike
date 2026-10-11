@@ -32,6 +32,16 @@ describe('placing orders', () => {
     expectStatus(await m.owner.api.post(`/api/stores/${s.id}/products`, { title: 'x', priceCents: 3_000_000_000 }), 400)
   })
 
+  test('qty above 1,000,000 → 400 even when the total fits; 1,000,000 is allowed (SPEC §9 bounds)', async () => {
+    const { m, s } = await merchantWithStore()
+    const p = await m.product(s.id, 1)
+    const c = await newCustomer()
+    expectError(await c.api.post(`/api/stores/${s.id}/orders`, { items: [{ productId: p.id, qty: 1_000_001 }] }), 400)
+    expect(ok(await c.api.get<Items<Order>>('/api/me/orders'), 200).items).toEqual([])
+    const o = ok(await c.api.post<Order>(`/api/stores/${s.id}/orders`, { items: [{ productId: p.id, qty: 1_000_000 }] }), 201)
+    expect(o.totalCents).toBe(1_000_000)
+  })
+
   test('a later price change does not alter an existing order', async () => {
     const { m, s } = await merchantWithStore()
     const o = await m.order(s.id, 400)

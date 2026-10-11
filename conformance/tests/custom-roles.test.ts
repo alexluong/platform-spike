@@ -113,6 +113,28 @@ describe('assignment scope', () => {
   })
 })
 
+describe('duplicate assignment', () => {
+  test('the same (user, role, scope) twice → 409 already_assigned; one unassign removes the role', async () => {
+    const { m, s } = await merchantWithStore()
+    const r = await m.role(['order.view'])
+    const u = await m.memberWithRole(r.id, storeScope(s))
+    expectError(
+      await m.owner.api.post(`/api/merchants/${m.id}/role-assignments`, { userId: u.id, roleId: r.id, scope: storeScope(s) }),
+      409,
+      'already_assigned',
+    )
+    expectStatus(await m.owner.api.delete(`/api/merchants/${m.id}/role-assignments/${u.assignment.id}`), 204)
+    expectDenied(await u.api.get(`/api/stores/${s.id}/orders`))
+  })
+
+  test('the same role at another scope is a new assignment → 201', async () => {
+    const { m, s } = await merchantWithStore()
+    const r = await m.role(['order.view'])
+    const u = await m.memberWithRole(r.id, storeScope(s))
+    await m.assign(u, r.id, m.scope)
+  })
+})
+
 describe('editing and deleting roles', () => {
   test('adding a permission takes effect on the very next request', async () => {
     const { m, s } = await merchantWithStore()

@@ -51,7 +51,13 @@ describe('install', () => {
   test('scopes not ⊆ requested → 400', async () => {
     const { m, s } = await merchantWithStore()
     const app = await registerApp(['order.view'])
-    expectError(await m.owner.api.post(`/api/stores/${s.id}/apps`, { appId: app.id, scopes: ['order.view', 'payment.view'] }), 400)
+    expectError(await m.owner.api.post(`/api/stores/${s.id}/apps`, { appId: app.id, scopes: ['order.view', 'payment.view'] }), 400, 'scope_not_requested')
+    expect(ok(await m.owner.api.get<Items<Install>>(`/api/stores/${s.id}/apps`), 200).items).toEqual([])
+  })
+
+  test('unknown appId → 404 not_found (an unknown id is 404 wherever it appears)', async () => {
+    const { m, s } = await merchantWithStore()
+    expectError(await m.owner.api.post(`/api/stores/${s.id}/apps`, { appId: 'no-such-app', scopes: ['order.view'] }), 404, 'not_found')
   })
 
   test('installer must hold every scope at that store → 403 escalation', async () => {

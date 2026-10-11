@@ -101,6 +101,18 @@ describe('under break-glass', () => {
     expect(await count()).toBeGreaterThan(before)
   })
 
+  test('/api/me/permissions under break-glass is audited too (batch can counts as a read)', async () => {
+    const [support, { m, s }] = await Promise.all([newSupport(), merchantWithStore()])
+    await openBreakGlass(support, m.id)
+    const count = async () => (await audit(m.id)).filter((e) => isActor(e, support) && e.action !== 'platform.break_glass').length
+    const before = await count()
+    ok(await support.api.get(`/api/me/permissions?storeId=${s.id}`), 200)
+    const afterStore = await count()
+    expect(afterStore).toBeGreaterThan(before)
+    ok(await support.api.get(`/api/me/permissions?merchantId=${m.id}`), 200)
+    expect(await count()).toBeGreaterThan(afterStore)
+  })
+
   test('/api/me/permissions reports only *.view actions', async () => {
     const [support, { m, s }] = await Promise.all([newSupport(), merchantWithStore()])
     await openBreakGlass(support, m.id)
