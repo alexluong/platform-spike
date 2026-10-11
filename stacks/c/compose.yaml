@@ -24,7 +24,7 @@ services:
     profiles: ["c"]
     build: ./cerbos
     healthcheck:
-      test: ["CMD", "/cerbos", "healthcheck", "--config=/config.yaml"]
+      test: ["CMD", "/cerbos", "healthcheck", "--config=/etc/platform/config.yaml"]
       interval: 2s
       timeout: 3s
       retries: 30
