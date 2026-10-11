@@ -1,0 +1,128 @@
+// Package merchants: merchant view and membership. SPEC §9 Merchant.
+package merchants
+
+import (
+	"context"
+	"errors"
+
+	"github.com/alexluong/platform-spike/go/internal/authz"
+	"github.com/alexluong/platform-spike/go/internal/core"
+	"github.com/alexluong/platform-spike/go/internal/modules/scope"
+	"github.com/alexluong/platform-spike/go/internal/perm"
+	"github.com/jackc/pgx/v5"
+)
+
+type Module struct{}
+
+func merchantTarget(ctx context.Context, r *core.Req) (core.Target, error) {
+	return scope.Merchant(ctx, r.Tx, r.Path("mid"))
+}
+
+func (m *Module) Ops() []core.Op {
+	return []core.Op{
+		{Action: "merchant.view", Method: "GET", Path: "/api/merchants/{mid}", Target: merchantTarget, Run: m.get},
+		{Action: "member.manage", Method: "POST", Path: "/api/merchants/{mid}/members", Status: 201, Target: merchantTarget, Run: m.addMember},
+		{Action: "member.manage", Method: "DELETE", Path: "/api/merchants/{mid}/members/{uid}", Status: 204, Target: merchantTarget, Run: m.removeMember},
+	}
+}
+
+func (m *Module) get(ctx context.Context, r *core.Req) (any, error) {
+	var id, name, status string
+	if err := r.Tx.QueryRow(ctx, `SELECT id, name, status FROM merchants WHERE id=$1`, r.Path("mid")).Scan(&id, &name, &status); err != nil {
+		return nil, err
+	}
+	return map[string]any{"id": id, "name": name, "status": status}, nil
+}
+
+func (m *Module) addMember(ctx context.Context, r *core.Req) (any, error) {
+	var in struct {
+		UserID string `json:"userId"`
+	}
+	if err := r.Decode(&in); err != nil {
+		return nil, err
+	}
+	if in.UserID == "" {
+		return nil, core.BadInput("userId is required")
+	}
+	mid := r.Path("mid")
+	var kind string
+	var current *string
+	err := r.Tx.QueryRow(ctx, `SELECT kind, merchant_id FROM users WHERE id=$1 FOR UPDATE`, in.UserID).Scan(&kind, &current)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, core.ErrNotFound
+	} else if err != nil {
+		return nil, err
+	}
+	if kind != string(perm.KindUser) {
+		return nil, core.BadInput("only merchant users can be members")
+	}
+	if current != nil {
+		return nil, core.Conflict("already_member") // one merchant per user in this spike
+	}
+	if _, err := r.Tx.Exec(ctx, `UPDATE users SET merchant_id=$2 WHERE id=$1`, in.UserID, mid); err != nil {
+		return nil, err
+	}
+	return map[string]any{"userId": in.UserID, "merchantId": mid}, nil
+}
+
+func (m *Module) removeMember(ctx context.Context, r *core.Req) (any, error) {
+	mid, uid := r.Path("mid"), r.Path("uid")
+	var current *string
+	err := r.Tx.QueryRow(ctx, `SELECT merchant_id FROM users WHERE id=$1 FOR UPDATE`, uid).Scan(&current)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return nil, err
+	}
+	if err != nil || current == nil || *current != mid {
+		return nil, core.ErrNotFound
+	}
+	// Lock the merchant's owner assignments, then apply the owner rules.
+	rows, err := r.Tx.Query(ctx, `SELECT id, user_id, role_id, scope_type, scope_id FROM role_assignments WHERE merchant_id=$1 FOR UPDATE`, mid)
+	if err != nil {
+		return nil, err
+	}
+	type asg struct{ id, user, role, st, sid string }
+	all, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (asg, error) {
+		var a asg
+		return a, row.Scan(&a.id, &a.user, &a.role, &a.st, &a.sid)
+	})
+	if err != nil {
+		return nil, err
+	}
+	var mine []asg
+	owners, myOwners := 0, 0
+	for _, a := range all {
+		isOwner := a.role == perm.RoleOwner && a.st == "merchant"
+		if isOwner {
+			owners++
+		}
+		if a.user == uid {
+			mine = append(mine, a)
+			if isOwner {
+				myOwners++
+			}
+		}
+	}
+	if myOwners > 0 {
+		if ok, err := r.Can(ctx, "role.manage_owner", core.MerchantTarget(mid), nil); err != nil {
+			return nil, err
+		} else if !ok {
+			return nil, core.ErrForbidden
+		}
+		if owners-myOwners < 1 {
+			return nil, core.Conflict("last_owner")
+		}
+	}
+	for _, a := range mine {
+		if _, err := r.Tx.Exec(ctx, `DELETE FROM role_assignments WHERE id=$1`, a.id); err != nil {
+			return nil, err
+		}
+		if err := r.Emit(ctx, authz.Event{Type: authz.EvAssignmentDeleted, MerchantID: mid, AssignmentID: a.id, UserID: a.user,
+			RoleID: a.role, ScopeType: a.st, ScopeID: a.sid}); err != nil {
+			return nil, err
+		}
+	}
+	if _, err := r.Tx.Exec(ctx, `UPDATE users SET merchant_id=NULL WHERE id=$1`, uid); err != nil {
+		return nil, err
+	}
+	return nil, nil
+}

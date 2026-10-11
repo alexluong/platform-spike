@@ -1,0 +1,223 @@
+// GENERATED from internal/perm by spicedb.Schema(); do not edit. Regenerate: go test ./internal/adapters/spicedb -update
+use expiration
+
+/** a merchant user; delegate = the live agent grants this user created */
+definition user {
+	relation delegate: agent_grant#agent
+}
+
+/** platform staff (platform_admin, support) */
+definition staff {}
+
+definition app {}
+
+definition agent {}
+
+caveat refund_limit(amount int, limit int) {
+	amount <= limit
+}
+
+definition platform {
+	relation admin: staff
+	relation support: staff
+	permission platform_merchant_create = admin
+	permission platform_merchant_view = admin + support
+	permission platform_merchant_suspend = admin
+	permission platform_app_register = admin
+	permission platform_audit_view = admin
+	permission platform_break_glass = admin + support
+}
+
+/** a system or custom role: which grantable permissions it holds */
+definition role {
+	relation merchant_view: user:* | agent:*
+	relation merchant_update: user:* | agent:*
+	relation member_manage: user:* | agent:*
+	relation role_manage: user:* | agent:*
+	relation store_create: user:* | agent:*
+	relation store_view: user:* | agent:*
+	relation product_create: user:* | agent:*
+	relation product_update: user:* | agent:*
+	relation product_view: user:* | agent:*
+	relation order_view: user:* | agent:*
+	relation order_cancel: user:* | agent:*
+	relation order_refund: user:* | user:* with refund_limit | agent:* | agent:* with refund_limit
+	relation payment_capture: user:* | agent:*
+	relation payment_view: user:* | agent:*
+	relation shipment_create: user:* | agent:*
+	relation shipment_update: user:* | agent:*
+	relation shipment_view: user:* | agent:*
+	relation app_install: user:* | agent:*
+	relation app_uninstall: user:* | agent:*
+	relation app_view: user:* | agent:*
+	relation agent_grant: user:* | agent:*
+	relation role_manage_owner: user:*
+}
+
+/** one role assignment: subject holds role (at the scope that points to this binding) */
+definition role_binding {
+	relation subject: user | user#delegate
+	relation role: role
+	permission merchant_view = subject & role->merchant_view
+	permission merchant_update = subject & role->merchant_update
+	permission member_manage = subject & role->member_manage
+	permission role_manage = subject & role->role_manage
+	permission store_create = subject & role->store_create
+	permission store_view = subject & role->store_view
+	permission product_create = subject & role->product_create
+	permission product_update = subject & role->product_update
+	permission product_view = subject & role->product_view
+	permission order_view = subject & role->order_view
+	permission order_cancel = subject & role->order_cancel
+	permission order_refund = subject & role->order_refund
+	permission payment_capture = subject & role->payment_capture
+	permission payment_view = subject & role->payment_view
+	permission shipment_create = subject & role->shipment_create
+	permission shipment_update = subject & role->shipment_update
+	permission shipment_view = subject & role->shipment_view
+	permission app_install = subject & role->app_install
+	permission app_uninstall = subject & role->app_uninstall
+	permission app_view = subject & role->app_view
+	permission agent_grant = subject & role->agent_grant
+	permission role_manage_owner = subject & role->role_manage_owner
+}
+
+/** an agent grant on a store; every relation expires */
+definition agent_grant {
+	relation agent: agent with expiration
+	relation merchant_view: agent with expiration
+	relation merchant_update: agent with expiration
+	relation member_manage: agent with expiration
+	relation role_manage: agent with expiration
+	relation store_create: agent with expiration
+	relation store_view: agent with expiration
+	relation product_create: agent with expiration
+	relation product_update: agent with expiration
+	relation product_view: agent with expiration
+	relation order_view: agent with expiration
+	relation order_cancel: agent with expiration
+	relation order_refund: agent with expiration
+	relation payment_capture: agent with expiration
+	relation payment_view: agent with expiration
+	relation shipment_create: agent with expiration
+	relation shipment_update: agent with expiration
+	relation shipment_view: agent with expiration
+	relation app_install: agent with expiration
+	relation app_uninstall: agent with expiration
+	relation app_view: agent with expiration
+	relation agent_grant: agent with expiration
+}
+
+/** an app installed on a store with scopes */
+definition app_install {
+	relation merchant_view: app
+	relation merchant_update: app
+	relation store_create: app
+	relation store_view: app
+	relation product_create: app
+	relation product_update: app
+	relation product_view: app
+	relation order_view: app
+	relation order_cancel: app
+	relation order_refund: app
+	relation payment_capture: app
+	relation payment_view: app
+	relation shipment_create: app
+	relation shipment_update: app
+	relation shipment_view: app
+	relation app_view: app
+}
+
+definition merchant {
+	relation platform: platform
+	relation binding: role_binding
+	relation any_user: user:*
+	relation suspended: user:* | agent:* | app:*
+	relation break_glass_viewer: staff with expiration
+	permission platform_break_glass = platform->platform_break_glass
+	permission role_manage_owner = (binding->role_manage_owner & any_user) - suspended
+	permission merchant_view_held = binding->merchant_view
+	permission merchant_view = ((merchant_view_held & any_user) - suspended) + break_glass_viewer
+	permission merchant_update_held = binding->merchant_update
+	permission merchant_update = (merchant_update_held & any_user) - suspended
+	permission member_manage_held = binding->member_manage
+	permission member_manage = (member_manage_held & any_user) - suspended
+	permission role_manage_held = binding->role_manage
+	permission role_manage = (role_manage_held & any_user) - suspended
+	permission store_create_held = binding->store_create
+	permission store_create = (store_create_held & any_user) - suspended
+	permission store_view_held = binding->store_view
+	permission store_view = ((store_view_held & any_user) - suspended) + break_glass_viewer
+	permission product_create_held = binding->product_create
+	permission product_create = (product_create_held & any_user) - suspended
+	permission product_update_held = binding->product_update
+	permission product_update = (product_update_held & any_user) - suspended
+	permission product_view_held = binding->product_view
+	permission product_view = ((product_view_held & any_user) - suspended) + break_glass_viewer
+	permission order_view_held = binding->order_view
+	permission order_view = ((order_view_held & any_user) - suspended) + break_glass_viewer
+	permission order_cancel_held = binding->order_cancel
+	permission order_cancel = (order_cancel_held & any_user) - suspended
+	permission order_refund_held = binding->order_refund
+	permission order_refund = (order_refund_held & any_user) - suspended
+	permission payment_capture_held = binding->payment_capture
+	permission payment_capture = (payment_capture_held & any_user) - suspended
+	permission payment_view_held = binding->payment_view
+	permission payment_view = ((payment_view_held & any_user) - suspended) + break_glass_viewer
+	permission shipment_create_held = binding->shipment_create
+	permission shipment_create = (shipment_create_held & any_user) - suspended
+	permission shipment_update_held = binding->shipment_update
+	permission shipment_update = (shipment_update_held & any_user) - suspended
+	permission shipment_view_held = binding->shipment_view
+	permission shipment_view = ((shipment_view_held & any_user) - suspended) + break_glass_viewer
+	permission app_install_held = binding->app_install
+	permission app_install = (app_install_held & any_user) - suspended
+	permission app_uninstall_held = binding->app_uninstall
+	permission app_uninstall = (app_uninstall_held & any_user) - suspended
+	permission app_view_held = binding->app_view
+	permission app_view = ((app_view_held & any_user) - suspended) + break_glass_viewer
+	permission agent_grant_held = binding->agent_grant
+	permission agent_grant = (agent_grant_held & any_user) - suspended
+}
+
+definition store {
+	relation merchant: merchant
+	relation binding: role_binding
+	relation any_user: user:*
+	relation grant: agent_grant
+	relation install: app_install
+	permission role_manage_held = binding->role_manage + merchant->role_manage_held
+	permission role_manage = (role_manage_held & (any_user + grant->role_manage)) - merchant->suspended
+	permission store_view_held = binding->store_view + merchant->store_view_held
+	permission store_view = (((store_view_held & (any_user + grant->store_view)) + install->store_view) - merchant->suspended) + merchant->break_glass_viewer
+	permission product_create_held = binding->product_create + merchant->product_create_held
+	permission product_create = ((product_create_held & (any_user + grant->product_create)) + install->product_create) - merchant->suspended
+	permission product_update_held = binding->product_update + merchant->product_update_held
+	permission product_update = ((product_update_held & (any_user + grant->product_update)) + install->product_update) - merchant->suspended
+	permission product_view_held = binding->product_view + merchant->product_view_held
+	permission product_view = (((product_view_held & (any_user + grant->product_view)) + install->product_view) - merchant->suspended) + merchant->break_glass_viewer
+	permission order_view_held = binding->order_view + merchant->order_view_held
+	permission order_view = (((order_view_held & (any_user + grant->order_view)) + install->order_view) - merchant->suspended) + merchant->break_glass_viewer
+	permission order_cancel_held = binding->order_cancel + merchant->order_cancel_held
+	permission order_cancel = ((order_cancel_held & (any_user + grant->order_cancel)) + install->order_cancel) - merchant->suspended
+	permission order_refund_held = binding->order_refund + merchant->order_refund_held
+	permission order_refund = ((order_refund_held & (any_user + grant->order_refund)) + install->order_refund) - merchant->suspended
+	permission payment_capture_held = binding->payment_capture + merchant->payment_capture_held
+	permission payment_capture = ((payment_capture_held & (any_user + grant->payment_capture)) + install->payment_capture) - merchant->suspended
+	permission payment_view_held = binding->payment_view + merchant->payment_view_held
+	permission payment_view = (((payment_view_held & (any_user + grant->payment_view)) + install->payment_view) - merchant->suspended) + merchant->break_glass_viewer
+	permission shipment_create_held = binding->shipment_create + merchant->shipment_create_held
+	permission shipment_create = ((shipment_create_held & (any_user + grant->shipment_create)) + install->shipment_create) - merchant->suspended
+	permission shipment_update_held = binding->shipment_update + merchant->shipment_update_held
+	permission shipment_update = ((shipment_update_held & (any_user + grant->shipment_update)) + install->shipment_update) - merchant->suspended
+	permission shipment_view_held = binding->shipment_view + merchant->shipment_view_held
+	permission shipment_view = (((shipment_view_held & (any_user + grant->shipment_view)) + install->shipment_view) - merchant->suspended) + merchant->break_glass_viewer
+	permission app_install_held = binding->app_install + merchant->app_install_held
+	permission app_install = (app_install_held & (any_user + grant->app_install)) - merchant->suspended
+	permission app_uninstall_held = binding->app_uninstall + merchant->app_uninstall_held
+	permission app_uninstall = (app_uninstall_held & (any_user + grant->app_uninstall)) - merchant->suspended
+	permission app_view_held = binding->app_view + merchant->app_view_held
+	permission app_view = (((app_view_held & (any_user + grant->app_view)) + install->app_view) - merchant->suspended) + merchant->break_glass_viewer
+	permission agent_grant_held = binding->agent_grant + merchant->agent_grant_held
+	permission agent_grant = (agent_grant_held & (any_user + grant->agent_grant)) - merchant->suspended
+}
