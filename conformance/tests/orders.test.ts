@@ -48,6 +48,15 @@ describe('placing orders', () => {
     expectError(await c.api.post(`/api/stores/${s.id}/orders`, { items: [{ productId: p.id, qty: 0 }] }), 400)
   })
 
+  test('a quantity whose total overflows → 400, no order', async () => {
+    const { m, s } = await merchantWithStore()
+    const c = await m.customer()
+    const p = await m.product(s.id, 1000)
+    // 2^62 × 1000 overflows a 64-bit total.
+    const r = await c.api.post(`/api/stores/${s.id}/orders`, { items: [{ productId: p.id, qty: 4611686018427387904 }] })
+    expectStatus(r, 400)
+  })
+
   test('products: public listing shows created products; product.update changes them', async () => {
     const { m, s } = await merchantWithStore()
     const p = await m.product(s.id, 300)

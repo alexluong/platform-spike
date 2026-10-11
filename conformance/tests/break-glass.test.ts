@@ -82,6 +82,16 @@ describe('under break-glass', () => {
     for (let i = 1; i < times.length; i++) expect(times[i - 1]).toBeGreaterThanOrEqual(times[i])
   })
 
+  test('listing stores (GET /api/merchants/:mid/stores) under break-glass is audited too', async () => {
+    const [support, { m, s }] = await Promise.all([newSupport(), merchantWithStore()])
+    await openBreakGlass(support, m.id)
+    const count = async () => (await audit(m.id)).filter((e) => isActor(e, support) && e.action !== 'platform.break_glass').length
+    const before = await count()
+    const stores = ok(await support.api.get<Items<{ id: string }>>(`/api/merchants/${m.id}/stores`), 200).items
+    expect(stores.map((x) => x.id)).toContain(s.id)
+    expect(await count()).toBeGreaterThan(before)
+  })
+
   test('/api/me/permissions reports only *.view actions', async () => {
     const [support, { m, s }] = await Promise.all([newSupport(), merchantWithStore()])
     await openBreakGlass(support, m.id)
