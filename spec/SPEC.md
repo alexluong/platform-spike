@@ -354,7 +354,26 @@ Found by reading the Go (`a`, `b`) and TS (`c`) code against this spec. Rows mar
 | agent grant: order of checks | `not_grantable` (400) before registrant (403) | registrant (403) before `not_grantable` (400) | open |
 | read-your-writes across app instances | `a`: per-process ZedToken (§1.4); `b`: `HIGHER_CONSISTENCY`, no token | attributes read from the DB on every check | `a`: known limitation |
 
+## 14. Proposed, not yet enforced by the suite
+
+Each one would change the suite or a stack. None is in force until it moves into the sections above.
+
+| # | proposal | finding that motivated it |
+|---|---|---|
+| P1 | **Agents get the apps' blocked list:** a grant can't list `role.manage`, `member.manage`, `agent.grant`, `app.install`, `app.uninstall` (400). One flag ("not for delegates") in the catalog, checked for both kinds. *Lead's default, pending Alex's confirmation.* | `a` (review-a 18) and `c` (review-c 2): an agent granted `role.manage` and `app.install` on a store assigned a role and installed an app; after the grant was revoked, the member kept the role and the app kept its install. The "granter still holds it" rule covers the agent's own requests, not the durable changes it made. |
+| P2 | **A named 409 code for wrong-state actions:** `invalid_state` for cancel, capture, refund and shipment creation on an order in the wrong status. `invalid_transition` stays for shipment status moves. | AMBIGUITIES #19: the suite accepts any 409 code; the stacks return `invalid_transition` for all of them, and `c` adds `not_captured`. Clients can't tell "wrong status" from "illegal move". |
+| P3 | **`GET /api/merchants/:mid/role-assignments`** → `{items: [{id, userId, roleId, scope}]}` (`role.manage` at the merchant; store-scoped holders see their store's). Merchant creation returns the owner assignment id. | AMBIGUITIES #11: the owner assignment made with the merchant has no id the API returns, so the last-owner rule can't be tested on it directly, and nobody can see who holds what. |
+| P4 | **Break-glass duration in seconds in test mode:** `seconds` accepted only when `TEST_MODE=1`. | AMBIGUITIES #27: the expiry test waits 65 s and dominates the suite's run time (`SKIP_SLOW=1` skips it). |
+| P5 | **Random per-stack `TEST_SECRET`, test mode off by default.** Compose generates or requires the secret (no `test-secret` default); `TEST_MODE=1` only in a test profile. The app port with test mode on must not be reachable beyond the test host. | review-a 7, review-c 14: anyone on the tailnet can mint a `platform_admin`. In `a`, `/api/_test/driver-config` also hands out Zitadel's `IAM_LOGIN_CLIENT` token (log in as any user). `b` publishes Hydra's unauthenticated admin port for the driver. |
+| P6 | **A failed relationship sync on revoke or uninstall doesn't return success.** Either 503 `sync_pending` (the change is committed; access ends when the relay catches up), or checks for the affected subject fall back to the DB until it does. Or, at minimum, document the window. | review-a 6: the transaction commits, the in-request drain fails, the request still answers 204, and the app or agent keeps access until the relay succeeds. |
+| P7 | **Token checks are named:** signature with an algorithm allowlist, `iss`, `aud`, `exp`, token type (an access token, never an ID token; `typ: at+jwt` where the IdP sets it, otherwise introspection), and the client (`azp`) is one the API allows. | review-a 8: `a` verifies access tokens with go-oidc's ID-token verifier. ID tokens pass as access tokens, and any client allowed the project audience mints tokens the API accepts. Not exploitable here (only known subjects map to principals); a confused-deputy risk with third-party clients. |
+| P8 | **Adding an unaffiliated user as a member needs their consent** (invite → accept). `POST /members` creates an invitation; the user joins on accept. | review-c 16: `POST /members` claims any user id without consent; that user then can't join the merchant they meant to (409 `already_member`). |
+
 ## 15. Changelog
+
+### v2 (2026-10-11): proposals
+
+- §14: P1–P8 (agent blocked list, `invalid_state`, assignment list, break-glass seconds, test-mode hardening, sync failure semantics, token checks, member consent).
 
 ### v2 (2026-10-11): runtime and operational rules
 
