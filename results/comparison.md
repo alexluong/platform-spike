@@ -19,7 +19,7 @@ Three stacks, one spec (`spec/SPEC.md` v2), one suite. All three pass **362/362*
 
 ## What the swap a → b showed
 
-- **Code:** zero changes to modules, kernel, ports or migrations. Outside the two new adapters: `go.mod`/`go.sum` and one `case` per switch in `cmd/*/main.go`. Pattern 3 (one `can()`) and pattern 7 (hand-wired root) did their job.
+- **Code:** zero changes to modules, kernel, ports or migrations. Outside the two new adapters: `go.mod`/`go.sum` and one `case` per switch in `cmd/*/main.go`. The one-`can()` seam and the hand-wired root did their job.
 - **Not covered by the interfaces** (each one bit or nearly bit):
   - which engine errors are permanent vs transient decides which sync events get dropped (both a and b had a misclassification that would lose revocations);
   - the OpenFGA sync is correct only with a single drainer (read-then-write), held by the relay's global lock, not stated in the port;
