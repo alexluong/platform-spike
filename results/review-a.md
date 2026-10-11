@@ -2,7 +2,7 @@
 
 Reviewed 2026-10-11 on branch `review-a` (from `go-a` at 5350c88). Read the spec, AMBIGUITIES, `results/a.md`, all of `go/`, `stacks/a/`, `conformance/stacks/a.ts`. Probed the running stack with three new conformance tests (all failed before the fixes).
 
-**Suite after fixes:** 344/344 (341 original + 3 new), full run including the 65 s break-glass expiry, stack rebuilt from this branch. Five more full runs: see the end of this file. `go test ./...` passes (new: `orders/mulAdd`, app-install precheck cases).
+**Suite after fixes:** 344/344 (341 original + 3 new), full run including the 65 s break-glass expiry, stack rebuilt from this branch. Of 8 full runs, 2 hit one flake in the driver: Zitadel answered `client not found` for a just-created machine user, a projection lag the driver's retry didn't match. `conformance/stacks/a.ts` now retries it too, and the 3 runs after that were 344/344. `go test ./...` passes (new: `orders/mulAdd`, app-install precheck cases).
 
 ## Findings, by severity
 
@@ -41,6 +41,11 @@ Reviewed 2026-10-11 on branch `review-a` (from `go-a` at 5350c88). Read the spec
 15. **`expiresInSeconds` overflow (fixed)**: values above ~9.2e9 wrapped the `Duration`. Now capped at one year (400).
 16. **500s echoed internal errors (fixed)**: `AsErr` put `err.Error()` (SQL, gRPC, Zitadel bodies) in the response. They are now logged only.
 17. **Audit list order (fixed)**: sorted by `id` while the suite checks `at` newest first. Two concurrent requests commit out of `at` order. Now `ORDER BY at DESC, id DESC`.
+
+### Raised by the lead from the stack c review
+
+18. **Agent grants turn temporary rights into permanent ones (confirmed in a, not fixed: spec-level).** An agent granted `role.manage` and `app.install` on a store (through the owner) assigned a custom role to a member at store scope (201) and installed an app (201). After `DELETE` of the grant, the member still had `order.view` and the install was still there. The grant expired and was revoked, but its effects did not. `agent.grant` is already user-only in `agents.go` (`grant`), and `member.manage` and role CRUD are merchant-scope, which agents never pass (`merchant#… = held & any_user`). The open paths are store-scope `role.manage` (assign/unassign), `app.install` and `app.uninstall`. Proposed (lead): give agents the apps' blocked list (`NotForApps` → `NotForDelegates` in `perm`, checked in `AllowsKind` for both kinds). Checked with an ad-hoc test, not committed.
+19. **Pool deadlock (stack c's critical): not present in a.** A request holds one pool connection (its tx). `can()`/`canMany` prechecks and the modules all use `r.Tx`. `LookupPrincipal` runs on the pool *before* `Begin`. The outbox drain starts its own tx only *after* `Commit`. So no request ever waits on a second connection while holding one. Burst (ad hoc): 200 parallel `/api/me/permissions`, 100 role PATCHes and 60 store-scope assigns on one merchant (360 requests, pool `MaxConns=40`) all returned 2xx in 2.1 s. `/healthz` during the burst answered 200 in 136 ms. One residual: write requests waiting on the global drain advisory lock each hold a pool connection while they wait. That can't deadlock (the lock holder already has its connection), but a large enough write burst queues reads, including `/healthz`'s `Ping`, behind it. `pg_try_advisory_xact_lock` + "someone else is draining, wait for my row" would avoid that.
 
 ## Concurrency and failure: what breaks with 2 app instances
 
