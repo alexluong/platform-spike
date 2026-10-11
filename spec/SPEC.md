@@ -19,7 +19,7 @@ Stacks `a` and `b` are **one Go codebase**. Switching between them must be confi
 3. **Custom roles are data.** The platform owns the permission catalog and the policy. Merchants create roles (subsets of grantable permissions) and assign them at a scope. Merchants never write policy.
 4. **App DB is the source of truth.** Roles, assignments, installs and grants live in Postgres (Go) / SQLite or Postgres (TS). Where the authz engine stores relationships (SpiceDB, OpenFGA), they are written from an **outbox** row committed in the same transaction as the change. The request that made the change drains its own outbox rows before responding, and later checks use the engine's read-your-writes mechanism (SpiceDB ZedToken / OpenFGA `HIGHER_CONSISTENCY`), so a change is visible to the very next request. A background relay retries anything left over. Cerbos is stateless: the app sends attributes (the PIP is the app).
 5. **Three checks.** Token/scope (is this credential allowed this kind of thing), relationship (is this subject connected to this resource), condition (attributes: refund limit, status, expiry). All must pass.
-6. **Tenant isolation twice.** Every query is scoped by merchant in SQL, and the authz engine checks too. Customers (buyers) are never put in the authz engine: "my orders" is `WHERE customer_id = me`.
+6. **Tenant isolation twice.** Every query is scoped by merchant in SQL, and the authz engine checks too. Customers (buyers) are never put in the authz engine: "my orders" is `WHERE customer_id = me`. Apps have no merchant: their SQL boundary is the install. Before the engine, an app's check needs an `app_installs` row for (app, store), and apps are denied at merchant scope (`c`: gap, §13).
 7. **Composition root by hand.** One `main` wires config → adapters → modules. No DI container, no globals.
 
 ## 2. Tenancy and principals
@@ -123,6 +123,8 @@ Principal kinds (the `subject.type` in `can`):
 
 Customer actions are not in the catalog (checked in SQL): `order.place` (create an order in a store), `order.view_own`.
 
+Stacks may add **internal actions** for checks the catalog doesn't name: `platform.app.register` (`POST /api/platform/apps`), `role.manage_owner` (held only through `owner`), `agent.register` (`c`). They are never grantable and never listed in `/api/me/permissions`.
+
 ## 5. Apps
 
 - The platform registers apps (`POST /api/platform/apps`, `platform_admin`) with a list of requested scopes (catalog action ids, grantable only: a `platform.*` scope → 400 `not_grantable`; suite also accepts `not_grantable_to_apps` or `invalid_input`). Registering returns client credentials.
@@ -137,7 +139,7 @@ Customer actions are not in the catalog (checked in SQL): `order.place` (create 
 
 - An agent is registered by a merchant user (`POST /api/agents`) and gets client credentials. It belongs to that user's merchant. Platform staff, customers and users with no merchant → 403.
 - **Only the agent's registrant can grant it** (403 otherwise). A grant lends the granter's rights to whoever holds the agent's secret; a teammate's grant on someone else's agent would keep working after that person left the merchant. Another merchant's agent → 400/403/404.
-- A user with `agent.grant` at a store creates a grant `{agentId, storeId, permissions, expiresInSeconds}`. The user must hold every permission in it at that store (403 `escalation`).
+- A user with `agent.grant` at a store creates a grant `{agentId, storeId, permissions, expiresInSeconds}`. Permissions must be grantable (400 `not_grantable`); `expiresInSeconds` is 1..31 536 000 (one year; 400 `invalid_input`). The user must hold every permission in it at that store (403 `escalation`).
 - An agent request is allowed iff an unexpired, unrevoked grant for (agent, store) lists the action **and** the user who created the grant **still** holds the action at that store now. Removing the user's role assignment, removing the permission from the role, or removing the user from the merchant cuts the agent off for exactly the actions lost; restoring the permission restores the agent (the grant itself is unchanged). `order.refund` through an agent uses the granting user's current limit.
 - Grants on different stores are independent.
 - Expiry must hold without a cleanup job running (SpiceDB: expiring relationships; OpenFGA: a condition on time; Cerbos: attribute comparison). Revocation: `DELETE` the grant (needs `agent.grant` at the store). After expiry or revocation the agent's token stays valid (no 401); its requests get 403.
@@ -148,14 +150,14 @@ Customer actions are not in the catalog (checked in SQL): `order.place` (create 
 - `platform_admin`: create, view, suspend, reinstate merchants; register apps; view the audit log. No access to merchant data (orders, products, roles, `GET /api/merchants/:mid`) without break-glass: 403.
 - `support`: view merchants. No access to merchant data without break-glass.
 - Without break-glass, `/api/me/permissions` for platform staff → `200 {actions: []}`.
-- **Break-glass:** `POST /api/platform/break-glass {merchantId, reason, minutes}` grants **read-only** access to that merchant's data (`*.view` actions) until expiry. It covers only its opener and only that merchant. Reads include `merchant.view` (`GET /api/merchants/:mid`, `GET /roles`) and `app.view`. Writes → 403.
-- **Audit:** every request made under break-glass writes an entry `{actor, action, merchantId, at}`: `actor` = the staff user's id, `action` = the catalog action the request ran (e.g. `order.view`; `merchant.view` for `GET /roles`). The grant itself is audited with `action: "platform.break_glass"`. Denied requests are not audited. The suite requires ≥ 1 entry per allowed read; `actor` may also be the email.
+- **Break-glass:** `POST /api/platform/break-glass {merchantId, reason, minutes}` grants **read-only** access to that merchant's data (`*.view` actions) until expiry. `minutes` is 1..1440 (400 `invalid_input`). It covers only its opener and only that merchant. Reads include `merchant.view` (`GET /api/merchants/:mid`, `GET /roles`) and `app.view`. Writes → 403. Under break-glass `/api/me/permissions` lists `*.view` actions only.
+- **Audit:** every request made under break-glass writes an entry `{actor, action, merchantId, at}`: `actor` = the staff user's id, `action` = the catalog action the request ran (e.g. `order.view`; `merchant.view` for `GET /roles`). **List endpoints count:** `GET /api/merchants/:mid/stores` filters through `store.view` and is audited as `store.view`, so a resource search or batch `can` must audit like a single check. The grant itself is audited with `action: "platform.break_glass"`. Denied requests are not audited. The suite requires ≥ 1 entry per allowed read; `actor` may also be the email.
 - **Suspended merchant:** every action by its own users, apps and agents is denied (403 `merchant_suspended`), and customers can't place orders in its stores (403 `merchant_suspended`; suite: any 403). Principals of other merchants see no difference: they get their usual 403/404, never `merchant_suspended`. Platform actions still work. Reinstating restores access. The public product listing of a suspended store stays visible **(not tested)**.
 
 ## 8. Orders, payments, delivery
 
 - Order: `{id, storeId, customerId, items: [{productId, qty, unitPriceCents}], totalCents, status, refundedCents}`.
-- Placing: prices come from the products; a client-sent `unitPriceCents` is ignored. A later price change doesn't alter an existing order. Empty `items` or `qty < 1` → 400. A product of another store → 400/404/409, no order.
+- Placing: prices come from the products; a client-sent `unitPriceCents` is ignored. A later price change doesn't alter an existing order. Empty `items`, `qty` outside 1..1 000 000, or a total above 2^31-1 cents → 400 (bounds in §9). A product of another store → 400/404/409, no order.
 - Status: `pending` → (`payment.capture`) `paid` → (`shipment.create`) `fulfilling` → (shipment `delivered`) `delivered`. `order.cancel` from `pending` or `paid` (no shipment) → `cancelled`.
 - Payment: fake provider. `capture` on a `pending` order captures `totalCents`. `refund` (via `order.refund`) needs a `paid` order (exactly: `fulfilling`/`delivered` → 409). Total refunded ≤ captured (409 `over_refund`). Partial refunds allowed. `amountCents ≤ 0` → 400. The status stays `paid` after a full refund **(not tested)**.
 - Refund limit: per refund request, not cumulative (two refunds of 400 under a 500 limit both succeed).
@@ -171,6 +173,37 @@ Errors: `{ "error": { "code": "<snake_case>", "message"?: "..." } }`
 - 403 `forbidden` (or a more specific code: `escalation`, `merchant_suspended`)
 - 404 `not_found`. For resources in **another** merchant, either 403 or 404 is acceptable (the suite accepts both); never 200. A nonexistent id inside one's own merchant → 403 or 404 (an unknown id can't be attributed to a merchant).
 - 400 `invalid_input` / specific codes above; 409 for state rules.
+
+Error codes the stacks return. "Suite" = what the suite asserts; where it asserts only the status, the code is the stacks' shared choice.
+
+| status | code | when | suite |
+|---|---|---|---|
+| 401 | `unauthenticated` | no, invalid or non-Bearer token | code |
+| 403 | `forbidden` | default deny: missing permission, wrong principal kind, owner-only rule, grant of another user's agent, over-limit refund, wrong test secret | status |
+| 403 | `escalation` | guardrails: role create/edit/delete/assign, app install, agent grant | code |
+| 403 | `merchant_suspended` | the merchant's own principals while it is suspended; customer orders in its stores | code (status only for customers) |
+| 403 | `system_role` | `PATCH`/`DELETE` of a system role | any of 400/403/409 |
+| 404 | `not_found` | unknown id; another merchant's resource (403 also allowed) | status |
+| 400 | `invalid_input` | malformed body, missing field, missing query parameter, out-of-range value (bounds below) | status |
+| 400 | `not_grantable` | a non-grantable or unknown action in a role, a grant or an app registration | code (alternatives where §3/§5 say) |
+| 400 | `not_grantable_to_apps` | an app requests `role.manage`, `member.manage`, `agent.grant`, `app.install` or `app.uninstall` | code |
+| 400 | `not_member` | assigning a role to a user who isn't a member | any 4xx but 401 |
+| 409 | `last_owner` | removing the last owner assignment | code |
+| 409 | `over_refund` | refunds above the captured amount | code |
+| 409 | `invalid_transition` | shipment status not forward; today also every wrong-state cancel, capture, refund and shipment | code for shipments, status otherwise |
+| 409 | `already_member` | adding a user who already belongs to a merchant | not tested |
+
+**Input bounds** (all → 400 `invalid_input`; the suite checks the status):
+
+| field | allowed | why |
+|---|---|---|
+| `priceCents` | 0..2 147 483 647 (2^31-1) | money fits a 32-bit integer column |
+| order `totalCents` (Σ qty × price) | ≤ 2 147 483 647 | overflow wrapped totals before the cap |
+| `refundLimitCents` | 0..2 147 483 647 | |
+| `qty` | 1..1 000 000 (`c`: gap, §13) | |
+| refund `amountCents` | ≥ 1 (the upper bound is the captured amount, 409 `over_refund`) | |
+| agent grant `expiresInSeconds` | 1..31 536 000 (one year) | a grant that never practically expires; overflow |
+| break-glass `minutes` | 1..1440 | |
 
 ### Platform
 | method | path | action | body → response |
@@ -235,6 +268,10 @@ No endpoint lists role assignments, so the owner assignment created with the mer
 - `?storeId=` → store-scope actions held at that store (through store or merchant assignments).
 - `?merchantId=` → merchant-scope actions (`merchant.view`, `merchant.update`, `member.manage`, `role.manage`, `store.create`) held through merchant-scope assignments only.
 - `role.manage` ("merchant or store") appears in both. Store actions are never reported at merchant level, even when held at merchant scope.
+- Only grantable actions are listed: never `platform.*` or internal actions.
+- `order.refund` is listed when held at any limit.
+- Apps: their install's scopes at that store. Agents: the granted actions the granter still holds at that store. Customers: `[]`. Platform staff: `[]`, or `*.view` actions under break-glass.
+- Edits show on the next request.
 - Another merchant's store or merchant → 403/404, or `200 {actions: []}`. Neither parameter → 400.
 
 ### Test support (only when `TEST_MODE=1`, all need header `X-Test-Secret: <TEST_SECRET>`)
@@ -283,7 +320,37 @@ The app validates tokens itself (JWT via JWKS, or introspection where the IdP re
 - Ops: containers, memory at idle, cold start time, bootstrap pain.
 - DX notes: what was hard, what docs were wrong, what an agent got wrong first.
 
+## 13. Where the stacks differ (the suite can't see it)
+
+Found by reading the Go (`a`, `b`) and TS (`c`) code against this spec. Rows marked **gap** break a rule above; the others are choices the spec leaves open.
+
+| topic | `a` / `b` (Go) | `c` (TS) | status |
+|---|---|---|---|
+| `qty` upper bound | 1..1 000 000 | ≥ 1 only; the total cap still applies (1 000 001 × a 1-cent product → 201) | **gap in `c`** |
+| app SQL check (§1.6) | `app_installs` row required before the engine | Cerbos policy only (`tenantOf` is undefined for apps; review-c #9) | **gap in `c`** |
+| `/api/me/permissions` under break-glass | audited (batch `can` audits) | not audited (`can.many` in `run` skips the executor's audit) | **gap in `c`** (§7 "every request") |
+| escalation check on unassign | no | yes (same guardrail as assign) | open (§3) |
+| install with scopes ⊄ requested | 400 `scope_not_requested` | 400 `invalid_input` | open (suite: any code) |
+| install with an unknown `appId` | 400 `invalid_input` | 404 | open |
+| assignment at a store of another merchant | 404 | 400 `invalid_input` | open (suite: 400/403/404) |
+| the same assignment twice | 409 `already_assigned` | 201, duplicate row | open |
+| refund with no captured payment | 409 `invalid_transition` | 409 `not_captured` | unreachable today (a `paid` order is captured) |
+| staff without break-glass: `GET /api/merchants/:mid/stores` | `200 {items: []}` | 403 | open |
+| agent grant: order of checks | `not_grantable` (400) before registrant (403) | registrant (403) before `not_grantable` (400) | open |
+| read-your-writes across app instances | `a`: per-process ZedToken (§1.4); `b`: `HIGHER_CONSISTENCY`, no token | attributes read from the DB on every check | `a`: known limitation |
+
 ## 15. Changelog
+
+### v2 (2026-10-11): shared rules encoded
+
+Rules the stacks share, checked in the Go and TS code; the suite (349 tests) covers the cases named in §9. Three exceptions in `c` (qty bound, app SQL check, break-glass audit of `/me/permissions`) are listed in §13.
+- Only the agent's registrant can grant it (§6; review-a finding 1).
+- Money capped at 2^31-1 cents (prices, order totals, refund limits); `qty` 1..1 000 000; grant expiry ≤ 1 year; break-glass `minutes` 1..1440; all 400 `invalid_input` (§9 Input bounds; review-a 3, 15; review-c 6).
+- Break-glass list reads are audited (§7; review-a 4, review-c 3).
+- Apps are checked in SQL (install row) as well as in the engine (§1.6; review-a 5).
+- `merchant_suspended` only for the merchant's own principals (§7; review-c 5).
+- `/api/me/permissions` details (§9 Me) and the error code table (§9).
+- Where a stack misses one of these: §13.
 
 ### v2 (2026-10-11): ambiguities resolved
 
