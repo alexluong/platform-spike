@@ -14,10 +14,11 @@ import { env } from '../src/env'
 const baseUrl = process.env.APP_URL ?? `http://${env.host}:8081`
 /**
  * Zitadel, published by stacks/a/compose.yaml on 8085. Zitadel resolves its instance
- * from the Host header, so this host must equal the stack's ZITADEL external domain
- * (STACK_A_HOST, default cs-ws).
+ * from the Host header, so by default the driver uses the issuer the app reports
+ * (http://$STACK_A_HOST:8085, default cs-ws.lab.alexluong.com). Override with ZITADEL_URL.
  */
-export const zitadelUrl = process.env.ZITADEL_URL ?? `http://${env.host}:8085`
+export const zitadelPort = 8085
+export const zitadelUrlOverride = process.env.ZITADEL_URL
 
 interface DriverConfig {
   issuer: string
@@ -51,7 +52,8 @@ async function call(path: string, init: RequestInit & { token?: string; json?: u
   const headers = new Headers(init.headers)
   if (init.token) headers.set('Authorization', `Bearer ${init.token}`)
   if (init.json !== undefined) headers.set('Content-Type', 'application/json')
-  return fetch(`${zitadelUrl}${path}`, {
+  const base = zitadelUrlOverride ?? (await config()).issuer
+  return fetch(`${base}${path}`, {
     ...init,
     headers,
     body: init.json !== undefined ? JSON.stringify(init.json) : init.body,
@@ -94,7 +96,7 @@ const driver: StackDriver = {
     if (auth.status < 300 || auth.status >= 400 || !location) {
       throw new Error(`zitadel authorize: expected redirect, got ${auth.status} ${await auth.text()}`)
     }
-    const authRequestId = new URL(location, zitadelUrl).searchParams.get('authRequest')
+    const authRequestId = new URL(location, zitadelUrlOverride ?? cfg.issuer).searchParams.get('authRequest')
     if (!authRequestId) throw new Error(`zitadel authorize: no authRequest in ${location}`)
 
     // 2. Session with user + password checks (what the login UI does).
@@ -141,15 +143,24 @@ const driver: StackDriver = {
   async loginClient(clientId, clientSecret) {
     const cfg = await config()
     const basic = Buffer.from(`${encodeURIComponent(clientId)}:${encodeURIComponent(clientSecret)}`).toString('base64')
-    const tok = await jsonOrThrow<{ access_token: string }>(
-      await call('/oauth/v2/token', {
+    // Zitadel is eventually consistent: a secret added a moment ago can read as
+    // "Secret.NotExisting" until its projection catches up, so retry briefly.
+    for (let attempt = 0; ; attempt++) {
+      const res = await call('/oauth/v2/token', {
         method: 'POST',
         headers: { 'Content-Type': 'application/x-www-form-urlencoded', Authorization: `Basic ${basic}` },
         body: new URLSearchParams({ grant_type: 'client_credentials', scope: scope(cfg, 'openid') }),
-      }),
-      'token (client_credentials)',
-    )
-    return tok.access_token
+      })
+      if (res.status === 400 && attempt < 20) {
+        const text = await res.clone().text()
+        if (text.includes('NotExisting') || text.includes('NotFound')) {
+          await new Promise((r) => setTimeout(r, 250))
+          continue
+        }
+      }
+      const tok = await jsonOrThrow<{ access_token: string }>(res, 'token (client_credentials)')
+      return tok.access_token
+    }
   },
 }
 export default driver

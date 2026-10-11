@@ -42,7 +42,7 @@ func (m *Module) permissions(ctx context.Context, r *core.Req) (any, error) {
 	var ids []string
 	var checks []core.Check
 	for _, a := range perm.Catalog {
-		if a.Internal || !a.AllowsScope(st) {
+		if !a.Grantable || !a.AllowsScope(st) { // merchant-data actions only (AMBIGUITIES #25)
 			continue
 		}
 		ids = append(ids, a.ID)

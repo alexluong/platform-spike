@@ -1,6 +1,7 @@
 # Stack a: Go app + Zitadel (OIDC) + SpiceDB, one Postgres. SPEC §11.
 #   DOCKER_HOST=ssh://cs-ws docker compose -p ps-a --profile a up -d --build
-# Published: app 8081, Zitadel 8085 (issuer http://${STACK_A_HOST:-cs-ws}:8085).
+# Published: app 8081, Zitadel 8085 (issuer http://${STACK_A_HOST:-cs-ws.lab.alexluong.com}:8085).
+# STACK_A_HOST must be the name clients resolve the docker host by (bare cs-ws does not resolve on the Mac).
 # Zitadel's external domain must be the name clients use; inside the network the
 # Zitadel container carries the same name as an alias, so the issuer URL is identical
 # for the login driver (outside) and the app/bootstrap (inside).
@@ -31,12 +32,14 @@ services:
     command: start-from-init --masterkey "MasterkeyNeedsToHave32Characters" --tlsMode disabled
     environment:
       ZITADEL_PORT: "8085"
-      ZITADEL_EXTERNALDOMAIN: ${STACK_A_HOST:-cs-ws}
+      ZITADEL_EXTERNALDOMAIN: ${STACK_A_HOST:-cs-ws.lab.alexluong.com}
       ZITADEL_EXTERNALPORT: "8085"
       ZITADEL_EXTERNALSECURE: "false"
       ZITADEL_TLS_ENABLED: "false"
       ZITADEL_DATABASE_POSTGRES_DSN: postgresql://postgres:postgres-a-dev-pw@a-postgres:5432/zitadel?sslmode=disable
       ZITADEL_FIRSTINSTANCE_ORG_HUMAN_PASSWORDCHANGEREQUIRED: "false"
+      # Dev: bcrypt cost 14 (default) makes each user create/login ~1s of CPU; the suite creates hundreds in parallel.
+      ZITADEL_SYSTEMDEFAULTS_PASSWORDHASHER_HASHER_COST: "6"
       # Service account (IAM owner) for the app: creates users and machine clients.
       ZITADEL_FIRSTINSTANCE_PATPATH: /zitadel/bootstrap/admin.pat
       ZITADEL_FIRSTINSTANCE_ORG_MACHINE_MACHINE_USERNAME: platform-spike-admin
@@ -48,13 +51,13 @@ services:
       ZITADEL_FIRSTINSTANCE_ORG_LOGINCLIENT_MACHINE_NAME: login-client
       ZITADEL_FIRSTINSTANCE_ORG_LOGINCLIENT_PAT_EXPIRATIONDATE: "2099-01-01T00:00:00Z"
       ZITADEL_DEFAULTINSTANCE_FEATURES_LOGINV2_REQUIRED: "true"
-      ZITADEL_DEFAULTINSTANCE_FEATURES_LOGINV2_BASEURI: http://${STACK_A_HOST:-cs-ws}:8085/ui/v2/login/
-      ZITADEL_OIDC_DEFAULTLOGINURLV2: http://${STACK_A_HOST:-cs-ws}:8085/ui/v2/login/login?authRequest=
+      ZITADEL_DEFAULTINSTANCE_FEATURES_LOGINV2_BASEURI: http://${STACK_A_HOST:-cs-ws.lab.alexluong.com}:8085/ui/v2/login/
+      ZITADEL_OIDC_DEFAULTLOGINURLV2: http://${STACK_A_HOST:-cs-ws.lab.alexluong.com}:8085/ui/v2/login/login?authRequest=
     ports: ["8085:8085"]
     volumes: [a-zitadel-bootstrap:/zitadel/bootstrap]
     networks:
       a-net:
-        aliases: ["${STACK_A_HOST:-cs-ws}"]
+        aliases: ["${STACK_A_HOST:-cs-ws.lab.alexluong.com}"]
     mem_limit: 1g
     depends_on:
       a-postgres: {condition: service_healthy}
@@ -96,7 +99,7 @@ services:
       AUTHZ: spicedb
       SPICEDB_ENDPOINT: a-spicedb:50051
       SPICEDB_KEY: spicedb-a-dev-key
-      ZITADEL_ISSUER: http://${STACK_A_HOST:-cs-ws}:8085
+      ZITADEL_ISSUER: http://${STACK_A_HOST:-cs-ws.lab.alexluong.com}:8085
       ZITADEL_ADMIN_PAT_FILE: /zitadel/bootstrap/admin.pat
       ZITADEL_LOGIN_PAT_FILE: /zitadel/bootstrap/login-client.pat
       STACK_CONFIG: /stack/stack.json

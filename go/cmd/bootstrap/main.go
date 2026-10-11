@@ -75,7 +75,7 @@ func run(log *slog.Logger) error {
 	var out any
 	switch env("IDP", "zitadel") {
 	case "zitadel":
-		issuer := env("ZITADEL_ISSUER", "http://cs-ws:8085")
+		issuer := env("ZITADEL_ISSUER", "http://cs-ws.lab.alexluong.com:8085")
 		cfg, err := zitadel.Bootstrap(ctx, log, zitadel.BootstrapInput{
 			Issuer:       issuer,
 			AdminPATFile: env("ZITADEL_ADMIN_PAT_FILE", "/zitadel/bootstrap/admin.pat"),
