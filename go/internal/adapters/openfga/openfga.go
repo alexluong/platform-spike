@@ -421,14 +421,31 @@ var wildcards = []string{"user:*", "agent:*", "app:*"}
 // deletes of missing tuples are ignored by the server (on_duplicate / on_missing), so
 // they never surface as errors. Errors OpenFGA will repeat on every retry (400:
 // the request doesn't fit the model) are marked authz.ErrPermanent; network
-// errors, 404 (store/model not there yet), 429 and 5xx stay transient.
+// errors, 429, 5xx and a missing store/model stay transient.
 func (c *Client) Apply(ctx context.Context, ev authz.Event) error {
 	err := c.apply(ctx, ev)
-	var ve fga.FgaApiValidationError
-	if errors.As(err, &ve) {
+	if permanent(err) {
 		return fmt.Errorf("%w: %w", authz.ErrPermanent, err)
 	}
 	return err
+}
+
+// permanent: a 400 that retrying can't fix. OpenFGA also answers 400 (not 404)
+// when the pinned model or the store is gone (store recreated, datastore reset).
+// That is environmental: classed permanent, the relay would dead-letter every
+// event, revocations included, in a few seconds. Those stay transient (loud,
+// in order) until the app is restarted against the right store/model.
+func permanent(err error) bool {
+	var ve fga.FgaApiValidationError
+	if !errors.As(err, &ve) {
+		return false
+	}
+	switch ve.ResponseCode() {
+	case fga.ERRORCODE_AUTHORIZATION_MODEL_NOT_FOUND, fga.ERRORCODE_LATEST_AUTHORIZATION_MODEL_NOT_FOUND,
+		fga.ERRORCODE_STORE_ID_INVALID_LENGTH:
+		return false
+	}
+	return true
 }
 
 func (c *Client) apply(ctx context.Context, ev authz.Event) error {
