@@ -34,12 +34,15 @@ export function storeActions(deps: { authz: Pick<Authorizer, 'searchResources' |
     },
   })
 
-  /** Stores of a merchant the caller has store.view on. No action check of its own (SPEC: "—"). */
+  /** Stores of a merchant the caller has store.view on. No action check of its own (SPEC: "—"),
+   *  except for platform staff: their only way in is break-glass, and every break-glass request must
+   *  be audited, which happens only for checks the executor runs (a resource search isn't one). */
   const list = defineAction({
     id: 'store.list',
     mutating: false,
     input: z.object({ merchantId: z.string() }),
-    authorize: async () => null,
+    authorize: async ({ db, principal }, i) =>
+      principal.kind === 'platform' ? { action: 'store.view', resource: await merchantCheck(db, principal, i.merchantId) } : null,
     async run({ tx, principal }, i) {
       const t = tenantOf(principal)
       const [m] = await tx.select().from(merchants).where(eq(merchants.id, i.merchantId))
