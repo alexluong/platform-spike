@@ -2,7 +2,7 @@
 import { desc, eq } from 'drizzle-orm'
 import { z } from 'zod'
 import { newId } from '../db/ids.js'
-import { products, stores } from '../db/schema.js'
+import { MAX_CENTS, products, stores } from '../db/schema.js'
 import { defineAction } from '../kernel/action.js'
 import { notFound } from '../kernel/errors.js'
 import { findProduct, findStore, storeResource } from './lookup.js'
@@ -13,7 +13,7 @@ export function catalogActions() {
   const create = defineAction({
     id: 'product.create',
     mutating: true,
-    input: z.object({ storeId: z.string(), title: z.string().min(1), priceCents: z.number().int().nonnegative() }),
+    input: z.object({ storeId: z.string(), title: z.string().min(1), priceCents: z.number().int().nonnegative().max(MAX_CENTS) }),
     authorize: async ({ db, principal }, i) => ({ action: 'product.create', resource: storeResource((await findStore(db, principal, i.storeId)).id) }),
     async run({ tx, principal, emit }, i) {
       const s = await findStore(tx, principal, i.storeId)
@@ -26,7 +26,7 @@ export function catalogActions() {
   const update = defineAction({
     id: 'product.update',
     mutating: true,
-    input: z.object({ productId: z.string(), title: z.string().min(1).optional(), priceCents: z.number().int().nonnegative().optional() }),
+    input: z.object({ productId: z.string(), title: z.string().min(1).optional(), priceCents: z.number().int().nonnegative().max(MAX_CENTS).optional() }),
     authorize: async ({ db, principal }, i) => ({ action: 'product.update', resource: storeResource((await findProduct(db, principal, i.productId)).storeId) }),
     async run({ tx, emit }, i) {
       const set: Partial<typeof products.$inferInsert> = {}

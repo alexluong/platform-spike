@@ -10,6 +10,10 @@ import type { ClientRegistry } from './apps.js'
 import { assertHoldsAll } from './guardrails.js'
 import { findStore, merchantResource, storeResource } from './lookup.js'
 
+/** Longest agent grant: one year. The spec names no cap; without one, a large value is an invalid
+ *  Date (500) and a grant that never practically expires. */
+const MAX_GRANT_SECONDS = 365 * 24 * 3600
+
 export function agentActions(deps: { clients: ClientRegistry }) {
   const register = defineAction({
     id: 'agent.register',
@@ -36,7 +40,7 @@ export function agentActions(deps: { clients: ClientRegistry }) {
       storeId: z.string(),
       agentId: z.string().min(1),
       permissions: z.array(z.string()).min(1),
-      expiresInSeconds: z.number().int().positive(),
+      expiresInSeconds: z.number().int().positive().max(MAX_GRANT_SECONDS),
     }),
     authorize: async ({ db, principal }, i) => ({ action: 'agent.grant', resource: storeResource((await findStore(db, principal, i.storeId)).id) }),
     async run({ tx, principal, can, emit }, i) {

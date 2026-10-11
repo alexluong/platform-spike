@@ -133,6 +133,14 @@ describe('grants', () => {
   })
 })
 
+describe('grant input', () => {
+  test('an absurd expiresInSeconds is a 400, not a 500 (regression: review-c, invalid date)', async () => {
+    const { m, s } = await merchantWithStore()
+    const creds = await registerAgent(m.owner)
+    expectStatus(await m.owner.api.post(`/api/stores/${s.id}/agent-grants`, { agentId: creds.id, permissions: ['order.view'], expiresInSeconds: 1e13 }), 400)
+  })
+})
+
 describe('the granting user must still hold the action', () => {
   test('removing the granting user’s role assignment cuts the agent off', async () => {
     const { m, s } = await merchantWithStore()

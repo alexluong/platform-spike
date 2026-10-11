@@ -2,7 +2,7 @@
 import { and, desc, eq, inArray } from 'drizzle-orm'
 import { z } from 'zod'
 import { newId } from '../db/ids.js'
-import { merchants, orders, payments, products, shipments, stores } from '../db/schema.js'
+import { MAX_CENTS, merchants, orders, payments, products, shipments, stores } from '../db/schema.js'
 import { defineAction } from '../kernel/action.js'
 import { conflict, forbidden, invalid, notFound } from '../kernel/errors.js'
 import { findOrder, findStore, storeResource } from './lookup.js'
@@ -47,6 +47,7 @@ export function orderActions() {
         return { productId: p.id, qty: x.qty, unitPriceCents: p.priceCents }
       })
       const totalCents = items.reduce((n, x) => n + x.qty * x.unitPriceCents, 0)
+      if (totalCents > MAX_CENTS) throw invalid('invalid_input', 'order total too large')
       const [o] = await tx
         .insert(orders)
         .values({ id: newId('o'), merchantId: s.merchantId, storeId: s.id, customerId: principal.id, items, totalCents, status: 'pending' })

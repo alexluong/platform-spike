@@ -2,6 +2,9 @@
 // tables (user, session, account, jwks, oauth*) and migrates them itself.
 import { index, integer, jsonb, pgTable, text, timestamp, uniqueIndex, bigserial } from 'drizzle-orm/pg-core'
 
+/** Money columns are Postgres `integer`: inputs above this would fail the insert (500). */
+export const MAX_CENTS = 2_147_483_647
+
 const ts = (name: string) => timestamp(name, { withTimezone: true, mode: 'date' })
 
 /** App-side record for an identity in Better Auth (`id` = Better Auth user id). */

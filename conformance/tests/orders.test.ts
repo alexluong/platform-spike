@@ -24,6 +24,14 @@ describe('placing orders', () => {
     expect(byProduct[p2.id]).toMatchObject({ qty: 1, unitPriceCents: 1000 })
   })
 
+  test('an absurd quantity or price is a 400, not a 500 (regression: review-c, total overflowed the DB column)', async () => {
+    const { m, s } = await merchantWithStore()
+    const p = await m.product(s.id, 100_000)
+    const c = await newCustomer()
+    expectStatus(await c.api.post(`/api/stores/${s.id}/orders`, { items: [{ productId: p.id, qty: 1_000_000 }] }), 400)
+    expectStatus(await m.owner.api.post(`/api/stores/${s.id}/products`, { title: 'x', priceCents: 3_000_000_000 }), 400)
+  })
+
   test('a later price change does not alter an existing order', async () => {
     const { m, s } = await merchantWithStore()
     const o = await m.order(s.id, 400)

@@ -3,7 +3,7 @@ import { and, eq } from 'drizzle-orm'
 import { z } from 'zod'
 import type { Queryable, Tx } from '../db/client.js'
 import { newId } from '../db/ids.js'
-import { members, merchants, roleAssignments, roles, stores } from '../db/schema.js'
+import { MAX_CENTS, members, merchants, roleAssignments, roles, stores } from '../db/schema.js'
 import { defineAction, type Can } from '../kernel/action.js'
 import type { Resource } from '../kernel/authz.js'
 import { SYSTEM_ROLES, isGrantable, systemRole } from '../kernel/catalog.js'
@@ -90,7 +90,7 @@ export function roleActions() {
   const create = defineAction({
     id: 'role.create',
     mutating: true,
-    input: mid.extend({ name: z.string().min(1), permissions: permsSchema, refundLimitCents: z.number().int().nonnegative().nullish() }),
+    input: mid.extend({ name: z.string().min(1), permissions: permsSchema, refundLimitCents: z.number().int().nonnegative().max(MAX_CENTS).nullish() }),
     authorize: async ({ db, principal }, i) => ({ action: 'role.manage', resource: await merchantCheck(db, principal, i.merchantId) }),
     async run({ tx, can, emit }, i) {
       assertGrantable(i.permissions)
@@ -110,7 +110,7 @@ export function roleActions() {
       roleId: z.string(),
       name: z.string().min(1).optional(),
       permissions: permsSchema.optional(),
-      refundLimitCents: z.number().int().nonnegative().nullish(),
+      refundLimitCents: z.number().int().nonnegative().max(MAX_CENTS).nullish(),
     }),
     authorize: async ({ db, principal }, i) => ({ action: 'role.manage', resource: await merchantCheck(db, principal, i.merchantId) }),
     async run({ tx, can, emit }, i) {
