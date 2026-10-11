@@ -10,6 +10,8 @@ A mini Shopify, built three times on different identity + authorization stacks, 
 
 Stacks `a` and `b` are **one Go codebase**. Switching between them must be configuration plus adapters only; no module code may know which identity provider or authorization engine is behind it. How much had to change for `b` is one of the spike's results.
 
+**The suite is the ground truth.** This spec describes what `conformance/` enforces. Where the suite accepts several answers, the spec says so ("suite: any of …"). Rules marked **(not tested)** are agreed but the suite can't see them. Ideas not enforced yet are in §14.
+
 ## 1. Patterns the code must follow
 
 1. **Action = unit of capability.** Every operation is an action with an id `<module>.<verb>` (catalog in §4). A registry lists them. One executor runs every mutating action: authenticate → authorize (`can`) → run → write outbox in the same DB transaction. HTTP handlers are thin adapters onto actions.
@@ -45,7 +47,9 @@ Principal kinds (the `subject.type` in `can`):
 | `app` | client credentials | permissions = scopes granted at install on a store |
 | `agent` | client credentials | acts for the user who created the grant; see §6 |
 
-A user belongs to at most one merchant in this spike.
+- A user belongs to at most one merchant in this spike.
+- **Membership and permissions come from the app DB, never from token claims.** A token issued before the user joined a merchant reflects later membership and role changes on the next request.
+- Only `customer` principals place orders and use `GET /api/me/orders`; anyone else → 403.
 
 ## 3. Roles
 
@@ -58,20 +62,29 @@ A user belongs to at most one merchant in this spike.
 | `developer` | `merchant.view`, `store.view`, `product.view`, `order.view`, `app.install`, `app.uninstall`, `app.view` |
 | `staff` | `merchant.view`, `store.view`, `product.view`, `product.create`, `product.update`, `order.view`, `order.cancel`, `shipment.view`, `shipment.create`, `shipment.update` |
 
-`owner` vs `admin`: only an owner can assign or remove the `owner` role. The last owner assignment of a merchant cannot be removed (409 `last_owner`).
+- The ids are the literal strings `owner`, `admin`, `developer`, `staff` in every merchant. They work as `roleId` and in `/roles/:rid`. `GET /roles` lists them with `system: true` and the permissions above.
+- `PATCH` or `DELETE` of a system role → 403 `system_role` (suite: any of 400/403/409); the role is unchanged.
+- `owner` vs `admin`: only an owner can assign or remove the `owner` role (403 `forbidden`). Removing an owner as a member (`DELETE /members/:uid`) counts as removing the role: 403 for a non-owner.
+- The last owner assignment of a merchant cannot be removed, by unassign or by member removal (409 `last_owner`). A caller without the needed permission gets 403, not 409.
 
 **Custom roles:** `{name, permissions: ActionId[], refundLimitCents?: number}`.
-- Only grantable permissions (§4) are allowed (400 `not_grantable`).
+- Only grantable permissions (§4) are allowed (400 `not_grantable`; an unknown action id: 400 `not_grantable` or `invalid_input`).
 - `refundLimitCents` applies to `order.refund` through this role. Absent = no limit. System roles have no limit.
 - Editing a role's permissions takes effect for everyone holding it, on the next request.
-- Deleting a role removes its assignments.
+- Deleting a role removes its assignments. Deleting one of those assignments afterwards → 404.
+- Roles are merchant-level objects: create/edit/delete check `role.manage` at the merchant. A store-scoped `role.manage` holder can only assign and unassign at its store **(role CRUD by them: not tested)**.
 
 **Assignments:** `{userId, roleId, scope: {type: "merchant" | "store", id}}`.
-- Merchant scope applies to every store of the merchant. Store scope applies to that store only.
+- Merchant scope applies to every store of the merchant, including stores created later. Store scope applies to that store only.
 - A user's permissions at a store = union over assignments at that store + at the merchant.
-- For `order.refund` with several roles, the highest limit wins (no limit beats any limit).
+- A store assignment grants nothing on the merchant resource, even when the role contains merchant-scope permissions (`staff` at a store holds `merchant.view` there, but can't `GET /api/merchants/:mid`).
+- The assignee must be a member of the merchant: 400 `not_member` (suite: any of 400/403/404/409, never 201). A store scope must be a store of this merchant.
+- For `order.refund` with several roles, the highest limit wins (no limit beats any limit). Only roles that apply at the order's store count: a no-limit role at another store does not lift the limit.
 
 **Guardrails (no escalation):** to create, edit, assign or delete a role, the caller needs `role.manage` at that scope **and** must hold every permission in that role at that scope. For limits: the caller's own refund limit must be ≥ the role's (or the caller has no limit). Violations are 403 `escalation`. These are checked in the action, through `can`.
+- "Holds at a store" = a role containing the permission is assigned to the caller at that store or at the merchant, whatever the permission's catalog scope. So an owner can assign `staff` (which contains `merchant.view`) at store scope.
+- Editing a role (even a rename) needs every permission the role has now **and** every permission it will have.
+- Unassign needs `role.manage` at the assignment's scope (403). The escalation check is not required on unassign **(not tested; `c` applies it, `a`/`b` don't)**.
 
 **New permissions are deny by default:** a custom role holds exactly the permissions listed in it. (System roles are defined in code and get new permissions when the platform adds them.)
 
@@ -87,7 +100,7 @@ A user belongs to at most one merchant in this spike.
 | `platform.break_glass` | no | merchant | `support` and `platform_admin` may open one; see §7 |
 | `platform.audit.view` | no | platform | `platform_admin` |
 | `merchant.view` | yes | merchant | |
-| `merchant.update` | yes | merchant | |
+| `merchant.update` | yes | merchant | no endpoint; only visible in `/api/me/permissions` |
 | `member.manage` | yes | merchant | add/remove members |
 | `role.manage` | yes | merchant or store | create/edit/delete roles, assign/unassign (plus guardrails) |
 | `store.create` | yes | merchant | |
@@ -112,42 +125,51 @@ Customer actions are not in the catalog (checked in SQL): `order.place` (create 
 
 ## 5. Apps
 
-- The platform registers apps (`POST /api/platform/apps`, `platform_admin`) with a list of requested scopes (catalog action ids, grantable only). Registering returns client credentials.
-- A merchant user with `app.install` on a store installs an app with `scopes ⊆ requested`. The installer must hold every scope they grant, at that store (403 `escalation`).
+- The platform registers apps (`POST /api/platform/apps`, `platform_admin`) with a list of requested scopes (catalog action ids, grantable only: a `platform.*` scope → 400 `not_grantable`; suite also accepts `not_grantable_to_apps` or `invalid_input`). Registering returns client credentials.
+- A merchant user with `app.install` on a store installs an app with `scopes ⊆ requested` (otherwise 400; suite: any code). The installer must hold every scope they grant, at that store (403 `escalation`); a scope held only at another store doesn't count.
 - An app's request is allowed iff it is installed on the resource's store **and** the action is in the install's scopes. Apps never get `role.manage`, `member.manage`, `agent.grant`, `app.install`, `app.uninstall` even if requested (registration rejects them, 400 `not_grantable_to_apps`).
+- Apps act on stores only. Merchant-level actions (role or store creation, agent registration) → 403.
+- One app may be installed on stores of several merchants; installs are independent (uninstalling in one leaves the others).
 - Uninstall removes access immediately (next request).
 - Refund limit for apps: none in this spike (scope only).
 
 ## 6. Agents
 
-- An agent is registered by a merchant user (`POST /api/agents`) and gets client credentials. It belongs to that user's merchant.
+- An agent is registered by a merchant user (`POST /api/agents`) and gets client credentials. It belongs to that user's merchant. Platform staff, customers and users with no merchant → 403.
+- **Only the agent's registrant can grant it** (403 otherwise). A grant lends the granter's rights to whoever holds the agent's secret; a teammate's grant on someone else's agent would keep working after that person left the merchant. Another merchant's agent → 400/403/404.
 - A user with `agent.grant` at a store creates a grant `{agentId, storeId, permissions, expiresInSeconds}`. The user must hold every permission in it at that store (403 `escalation`).
-- An agent request is allowed iff an unexpired, unrevoked grant for (agent, store) lists the action **and** the user who created the grant **still** holds the action at that store now (so removing the user's role also cuts the agent off). `order.refund` through an agent uses the granting user's limit.
-- Expiry must hold without a cleanup job running (SpiceDB: expiring relationships; OpenFGA: a condition on time; Cerbos: attribute comparison). Revocation: `DELETE` the grant.
+- An agent request is allowed iff an unexpired, unrevoked grant for (agent, store) lists the action **and** the user who created the grant **still** holds the action at that store now. Removing the user's role assignment, removing the permission from the role, or removing the user from the merchant cuts the agent off for exactly the actions lost; restoring the permission restores the agent (the grant itself is unchanged). `order.refund` through an agent uses the granting user's current limit.
+- Grants on different stores are independent.
+- Expiry must hold without a cleanup job running (SpiceDB: expiring relationships; OpenFGA: a condition on time; Cerbos: attribute comparison). Revocation: `DELETE` the grant (needs `agent.grant` at the store). After expiry or revocation the agent's token stays valid (no 401); its requests get 403.
+- An agent's `GET /api/me` → `{id, kind: "agent", merchantId}` (its registrant's merchant).
 
 ## 7. Platform staff
 
-- `platform_admin`: create, view, suspend, reinstate merchants; register apps; view the audit log. No access to merchant data (orders, products, roles) without break-glass.
+- `platform_admin`: create, view, suspend, reinstate merchants; register apps; view the audit log. No access to merchant data (orders, products, roles, `GET /api/merchants/:mid`) without break-glass: 403.
 - `support`: view merchants. No access to merchant data without break-glass.
-- **Break-glass:** `POST /api/platform/break-glass {merchantId, reason, minutes}` grants **read-only** access to that merchant's data (`*.view` actions) until expiry. Every request made under break-glass writes an audit entry `{actor, action, merchantId, at}`. The grant itself is audited too.
-- **Suspended merchant:** every action by its users, apps and agents is denied (403 `merchant_suspended`), and customers can't place orders in its stores. Platform actions still work. Reinstating restores access.
+- Without break-glass, `/api/me/permissions` for platform staff → `200 {actions: []}`.
+- **Break-glass:** `POST /api/platform/break-glass {merchantId, reason, minutes}` grants **read-only** access to that merchant's data (`*.view` actions) until expiry. It covers only its opener and only that merchant. Reads include `merchant.view` (`GET /api/merchants/:mid`, `GET /roles`) and `app.view`. Writes → 403.
+- **Audit:** every request made under break-glass writes an entry `{actor, action, merchantId, at}`: `actor` = the staff user's id, `action` = the catalog action the request ran (e.g. `order.view`; `merchant.view` for `GET /roles`). The grant itself is audited with `action: "platform.break_glass"`. Denied requests are not audited. The suite requires ≥ 1 entry per allowed read; `actor` may also be the email.
+- **Suspended merchant:** every action by its own users, apps and agents is denied (403 `merchant_suspended`), and customers can't place orders in its stores (403 `merchant_suspended`; suite: any 403). Principals of other merchants see no difference: they get their usual 403/404, never `merchant_suspended`. Platform actions still work. Reinstating restores access. The public product listing of a suspended store stays visible **(not tested)**.
 
 ## 8. Orders, payments, delivery
 
 - Order: `{id, storeId, customerId, items: [{productId, qty, unitPriceCents}], totalCents, status, refundedCents}`.
+- Placing: prices come from the products; a client-sent `unitPriceCents` is ignored. A later price change doesn't alter an existing order. Empty `items` or `qty < 1` → 400. A product of another store → 400/404/409, no order.
 - Status: `pending` → (`payment.capture`) `paid` → (`shipment.create`) `fulfilling` → (shipment `delivered`) `delivered`. `order.cancel` from `pending` or `paid` (no shipment) → `cancelled`.
-- Payment: fake provider. `capture` on a `pending` order captures `totalCents`. `refund` (via `order.refund`) needs a captured payment; total refunded ≤ captured (409 `over_refund`). Partial refunds allowed.
-- Shipment: `{id, orderId, carrier, status: label_created | in_transit | delivered}`. Status moves forward only (409 `invalid_transition`).
-- State-rule violations are 409 with a code; they are checked after authorization.
+- Payment: fake provider. `capture` on a `pending` order captures `totalCents`. `refund` (via `order.refund`) needs a `paid` order (exactly: `fulfilling`/`delivered` → 409). Total refunded ≤ captured (409 `over_refund`). Partial refunds allowed. `amountCents ≤ 0` → 400. The status stays `paid` after a full refund **(not tested)**.
+- Refund limit: per refund request, not cumulative (two refunds of 400 under a 500 limit both succeed).
+- Shipment: `{id, orderId, carrier, status: label_created | in_transit | delivered}`. Status moves forward only: backwards → 409 `invalid_transition`; the same status again → 409 `invalid_transition` **(not tested)**; skipping forward (`label_created` → `delivered`) is allowed **(not tested)**. An unknown status → 400.
+- State-rule violations are 409 with a code (suite: any code for wrong-state cancel, capture, refund and shipment; today all three stacks return `invalid_transition`). They are checked after authorization: a caller without the permission gets 403, not 409. The refund limit is part of authorization: an over-limit refund that would also be `over_refund` → 403.
 
 ## 9. HTTP API
 
-JSON in and out. Auth: `Authorization: Bearer <token>`. Ids are strings. Money in integer cents.
+JSON in and out. Auth: `Authorization: Bearer <token>`. Ids are strings. Money in integer cents. Timestamps (`expiresAt`, `at`) are ISO 8601 strings.
 
 Errors: `{ "error": { "code": "<snake_case>", "message"?: "..." } }`
-- 401 `unauthenticated`: missing/invalid token
+- 401 `unauthenticated`: missing/invalid token, or a non-Bearer `Authorization` header. Protected endpoints answer 401 before any 404.
 - 403 `forbidden` (or a more specific code: `escalation`, `merchant_suspended`)
-- 404 `not_found`. For resources in **another** merchant, either 403 or 404 is acceptable (the suite accepts both); never 200.
+- 404 `not_found`. For resources in **another** merchant, either 403 or 404 is acceptable (the suite accepts both); never 200. A nonexistent id inside one's own merchant → 403 or 404 (an unknown id can't be attributed to a merchant).
 - 400 `invalid_input` / specific codes above; 409 for state rules.
 
 ### Platform
@@ -155,8 +177,8 @@ Errors: `{ "error": { "code": "<snake_case>", "message"?: "..." } }`
 |---|---|---|---|
 | POST | `/api/platform/merchants` | `platform.merchant.create` | `{name, ownerUserId}` → `201 {id, name, status}`; makes `ownerUserId` a member with `owner` at merchant scope |
 | GET | `/api/platform/merchants` | `platform.merchant.view` | → `{items: Merchant[]}` |
-| POST | `/api/platform/merchants/:mid/suspend` | `platform.merchant.suspend` | → `{id, status: "suspended"}` |
-| POST | `/api/platform/merchants/:mid/reinstate` | `platform.merchant.suspend` | → `{id, status: "active"}` |
+| POST | `/api/platform/merchants/:mid/suspend` | `platform.merchant.suspend` | → `200 {id, status: "suspended"}` |
+| POST | `/api/platform/merchants/:mid/reinstate` | `platform.merchant.suspend` | → `200 {id, status: "active"}` |
 | POST | `/api/platform/apps` | `platform_admin` only | `{name, scopes}` → `201 {id, clientId, clientSecret}` |
 | POST | `/api/platform/break-glass` | `platform.break_glass` | `{merchantId, reason, minutes}` → `201 {id, expiresAt}` |
 | GET | `/api/platform/audit?merchantId=` | `platform.audit.view` | → `{items: [{actor, action, merchantId, at}]}` newest first |
@@ -166,7 +188,7 @@ Errors: `{ "error": { "code": "<snake_case>", "message"?: "..." } }`
 |---|---|---|---|
 | GET | `/api/merchants/:mid` | `merchant.view` | → `{id, name, status}` |
 | POST | `/api/merchants/:mid/members` | `member.manage` | `{userId}` → `201` (member with no roles) |
-| DELETE | `/api/merchants/:mid/members/:uid` | `member.manage` | → `204` (also removes assignments; last owner rule applies) |
+| DELETE | `/api/merchants/:mid/members/:uid` | `member.manage` | → `204` (also removes assignments; owner and last-owner rules apply) |
 | GET | `/api/merchants/:mid/roles` | `merchant.view` | → `{items: [{id, name, system, permissions, refundLimitCents?}]}` |
 | POST | `/api/merchants/:mid/roles` | `role.manage` | `{name, permissions, refundLimitCents?}` → `201 Role` |
 | PATCH | `/api/merchants/:mid/roles/:rid` | `role.manage` | `{name?, permissions?, refundLimitCents?}` → `Role` |
@@ -174,7 +196,9 @@ Errors: `{ "error": { "code": "<snake_case>", "message"?: "..." } }`
 | POST | `/api/merchants/:mid/role-assignments` | `role.manage` at the scope | `{userId, roleId, scope: {type, id}}` → `201 {id, ...}` |
 | DELETE | `/api/merchants/:mid/role-assignments/:aid` | `role.manage` at the scope | → `204` |
 | POST | `/api/merchants/:mid/stores` | `store.create` | `{name}` → `201 {id, merchantId, name}` |
-| GET | `/api/merchants/:mid/stores` | — | → stores the caller has `store.view` on |
+| GET | `/api/merchants/:mid/stores` | — | → stores the caller has `store.view` on; another merchant → 403/404 or `200 {items: []}` |
+
+No endpoint lists role assignments, so the owner assignment created with the merchant has no id the API returns. The last-owner rule is reachable through `DELETE /members/:uid` and through owner assignments made via the API (§14 proposes a list endpoint).
 
 ### Store modules
 | method | path | action | body → response |
@@ -185,14 +209,14 @@ Errors: `{ "error": { "code": "<snake_case>", "message"?: "..." } }`
 | GET | `/api/stores/:sid/products` | public (no auth) | → `{items}` |
 | POST | `/api/stores/:sid/orders` | customer (`order.place`) | `{items: [{productId, qty}]}` → `201 Order` (prices from products) |
 | GET | `/api/stores/:sid/orders` | `order.view` | → `{items}` |
-| GET | `/api/orders/:oid` | `order.view`, or the order's customer | |
+| GET | `/api/orders/:oid` | `order.view`, or the order's customer | another customer → 403/404 |
 | GET | `/api/me/orders` | customer | → own orders across stores |
-| POST | `/api/orders/:oid/cancel` | `order.cancel` | |
-| POST | `/api/orders/:oid/refund` | `order.refund` | `{amountCents}` → `Order` (403 when over the limit) |
+| POST | `/api/orders/:oid/cancel` | `order.cancel` | → any 2xx |
+| POST | `/api/orders/:oid/refund` | `order.refund` | `{amountCents}` → `200 Order` with the new `refundedCents` (403 when over the limit) |
 | POST | `/api/orders/:oid/payments/capture` | `payment.capture` | → `201 {id, orderId, status: "captured", amountCents}` |
 | GET | `/api/orders/:oid/payments` | `payment.view` | → `{items}` |
 | POST | `/api/orders/:oid/shipments` | `shipment.create` | `{carrier}` → `201 Shipment` |
-| POST | `/api/shipments/:shid/status` | `shipment.update` | `{status}` |
+| POST | `/api/shipments/:shid/status` | `shipment.update` | `{status}` → 2xx `Shipment` |
 | GET | `/api/orders/:oid/shipments` | `shipment.view` | |
 | POST | `/api/stores/:sid/apps` | `app.install` | `{appId, scopes}` → `201 {id, appId, storeId, scopes}` |
 | DELETE | `/api/stores/:sid/apps/:installId` | `app.uninstall` | → `204` |
@@ -204,13 +228,21 @@ Errors: `{ "error": { "code": "<snake_case>", "message"?: "..." } }`
 ### Me
 | method | path | response |
 |---|---|---|
-| GET | `/api/me` | `{id, kind, merchantId?}` |
+| GET | `/api/me` | `{id, kind, merchantId?}` (`merchantId` absent for customers, platform staff and users with no merchant; apps: not asserted) |
 | GET | `/api/me/permissions?storeId=` or `?merchantId=` | `{actions: ActionId[]}`: catalog actions the caller may perform there (batch `can`; AuthZEN action search) |
+
+`/api/me/permissions` reports each action at the resource type its §4 scope names:
+- `?storeId=` → store-scope actions held at that store (through store or merchant assignments).
+- `?merchantId=` → merchant-scope actions (`merchant.view`, `merchant.update`, `member.manage`, `role.manage`, `store.create`) held through merchant-scope assignments only.
+- `role.manage` ("merchant or store") appears in both. Store actions are never reported at merchant level, even when held at merchant scope.
+- Another merchant's store or merchant → 403/404, or `200 {actions: []}`. Neither parameter → 400.
 
 ### Test support (only when `TEST_MODE=1`, all need header `X-Test-Secret: <TEST_SECRET>`)
 | method | path | body → response |
 |---|---|---|
 | POST | `/api/_test/users` | `{email, password, kind: "platform" \| "user" \| "customer", platformRole?}` → `201 {id, email}`: creates the identity in the real IdP (Zitadel / Kratos / Better Auth) and the app-side record |
+
+A missing or wrong `X-Test-Secret` → 401 or 403.
 
 Everything else is created through the real API. There is no reset: every test creates its own merchant, so tests are independent and can run in parallel.
 
@@ -250,3 +282,59 @@ The app validates tokens itself (JWT via JWKS, or introspection where the IdP re
 - Glue code for custom roles (sync, cascade deletes, expiry, consistency).
 - Ops: containers, memory at idle, cold start time, bootstrap pain.
 - DX notes: what was hard, what docs were wrong, what an agent got wrong first.
+
+## 15. Changelog
+
+### v2 (2026-10-11): ambiguities resolved
+
+Each item of `conformance/AMBIGUITIES.md`, by number, and where it now lives.
+
+| # | resolved as | where |
+|---|---|---|
+| 1 | each action reported at its catalog scope type; `role.manage` at both | §9 Me |
+| 2 | a store assignment grants nothing on the merchant resource | §3 Assignments |
+| 3 | "holds at a store" = assigned at the store or the merchant, any catalog scope | §3 Guardrails |
+| 4 | edit needs the old and the new permission set (rename too) | §3 Guardrails |
+| 5 | role CRUD checks `role.manage` at the merchant; store-scoped holders assign/unassign only (CRUD not tested) | §3 Custom roles |
+| 6 | unassign needs `role.manage` at the assignment's scope; escalation check not required | §3 Guardrails |
+| 7 | owner-only rule → 403 `forbidden` | §3 |
+| 8 | removing an owner member by a non-owner → 403 | §3 |
+| 9 | system role ids are the literal names | §3 |
+| 10 | system role PATCH/DELETE → 403 `system_role` (suite: 400/403/409) | §3 |
+| 11 | no assignment list; last-owner reachable via member removal; list endpoint proposed | §9 Merchant, §14 |
+| 12 | `merchant.update` has no endpoint | §4 |
+| 13 | assigning to a non-member → 400 `not_member` (suite: 400/403/404/409) | §3 Assignments |
+| 14 | deleting a removed assignment → 404 | §3 Custom roles |
+| 15 | refund limit is per request | §8 |
+| 16 | over-limit refund → 403 (`forbidden`; suite: any code) | §8, §9 |
+| 17 | limit is checked before `over_refund` | §8 |
+| 18 | only roles at the order's store count for the limit | §3 Assignments |
+| 19 | wrong-state 409s: suite accepts any code; stacks use `invalid_transition`; `invalid_state` proposed | §8, §14 |
+| 20 | refund only on exactly `paid`; status after a full refund stays `paid` (not tested) | §8 |
+| 21 | backwards and same → 409 `invalid_transition`; skip forward allowed (same/skip not tested) | §8 |
+| 22 | placement edge cases | §8 |
+| 23 | only customers place orders and read `/me/orders` | §2 |
+| 24 | cancel any 2xx; refund 200 Order; capture 201; shipment status 2xx | §9 |
+| 25 | staff without break-glass: merchant data 403, `/me/permissions` `[]` | §7 |
+| 26 | audit `actor` = user id, `action` = catalog action; denied requests not audited | §7 |
+| 27 | `minutes` stays the unit; seconds in test mode proposed | §7, §14 |
+| 28 | break-glass covers its opener and its merchant; includes `merchant.view`, `app.view` | §7 |
+| 29 | suspended merchant: customer orders → 403 `merchant_suspended`; public listing visible (not tested) | §7 |
+| 30 | `merchant_suspended` only for the merchant's own principals | §7 |
+| 31 | suspend/reinstate → 200 | §9 Platform |
+| 32 | install scopes ⊄ requested → 400, any code | §5 |
+| 33 | non-grantable scope at registration → 400 `not_grantable` | §5 |
+| 34 | apps act on stores only | §5 |
+| 35 | one app on several merchants: independent installs | §5 |
+| 36 | only the agent's registrant can grant it | §6 |
+| 37 | agents registered by merchant users only | §6 |
+| 38 | expired/revoked grant: token valid, requests 403 | §6 |
+| 39 | agent `/me` has its registrant's `merchantId` | §6, §9 Me |
+| 40 | agent loses exactly what the granter lost; restored with it | §6 |
+| 41 | membership and permissions from the app DB, not the token | §2 |
+| 42 | 401 before 404; non-Bearer → 401 | §9 |
+| 43 | test-support guard → 401 or 403 | §9 Test support |
+| 44 | nonexistent id in one's own merchant → 403 or 404 | §9 |
+| 45 | cross-tenant store list and `/me/permissions` → 403/404 or empty 200 | §9 |
+| 46 | `/me/permissions` without a parameter → 400 | §9 Me |
+| 47 | timestamps are ISO 8601 | §9 |
