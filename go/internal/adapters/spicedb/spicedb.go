@@ -16,7 +16,9 @@ import (
 	"github.com/authzed/authzed-go/v1"
 	"github.com/authzed/grpcutil"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/structpb"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
@@ -225,7 +227,17 @@ func (c *Client) deleteResource(ctx context.Context, typ, id string) error {
 var wildcards = []string{"user", "agent", "app"}
 
 // Apply turns one outbox event into relationship writes. Idempotent (TOUCH / DELETE).
+// Errors SpiceDB will repeat on every retry are marked authz.ErrPermanent.
 func (c *Client) Apply(ctx context.Context, ev authz.Event) error {
+	err := c.apply(ctx, ev)
+	switch status.Code(err) {
+	case codes.InvalidArgument, codes.FailedPrecondition:
+		return fmt.Errorf("%w: %w", authz.ErrPermanent, err)
+	}
+	return err
+}
+
+func (c *Client) apply(ctx context.Context, ev authz.Event) error {
 	platform := obj("platform", "main")
 	switch ev.Type {
 	case authz.EvMerchantCreated:
@@ -311,11 +323,11 @@ func (c *Client) Apply(ctx context.Context, ev authz.Event) error {
 	case authz.EvPlatformRoleGranted:
 		relation := map[string]string{"platform_admin": "admin", "support": "support"}[ev.PlatformRole]
 		if relation == "" {
-			return fmt.Errorf("unknown platform role %q", ev.PlatformRole)
+			return fmt.Errorf("%w: unknown platform role %q", authz.ErrPermanent, ev.PlatformRole)
 		}
 		return c.write(ctx, touch(rel(platform, relation, subj("staff", ev.UserID, ""))))
 	}
-	return fmt.Errorf("spicedb: unhandled event %q", ev.Type)
+	return fmt.Errorf("%w: spicedb: unhandled event %q", authz.ErrPermanent, ev.Type)
 }
 
 func relKey(r *v1.Relationship) string {

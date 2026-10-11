@@ -6,6 +6,7 @@ package outbox
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"time"
@@ -14,7 +15,8 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-const maxAttempts = 10
+// alertAttempts: log loudly once an event has failed this many times (it is still retried).
+const alertAttempts = 10
 
 type Relay struct {
 	DB   *pgxpool.Pool
@@ -78,11 +80,19 @@ func (r *Relay) batch(ctx context.Context) (int, error) {
 	for _, x := range batch {
 		if err := r.Sync.Apply(ctx, x.ev); err != nil {
 			attempts := x.attempts + 1
-			if attempts >= maxAttempts {
-				r.Log.Error("outbox event dropped after max attempts", "id", x.id, "type", x.ev.Type, "err", err)
-				_, _ = tx.Exec(ctx, `UPDATE outbox SET attempts=$2, last_error=$3, processed_at=now() WHERE id=$1`, x.id, attempts, err.Error())
+			if errors.Is(err, authz.ErrPermanent) {
+				// The engine will never take it: dead-letter (processed, with the error) and move on.
+				r.Log.Error("outbox event dead-lettered", "id", x.id, "type", x.ev.Type, "err", err)
+				if _, err := tx.Exec(ctx, `UPDATE outbox SET attempts=$2, last_error=$3, processed_at=now() WHERE id=$1`, x.id, attempts, "dead: "+err.Error()); err != nil {
+					return 0, err
+				}
 				done++
 				continue
+			}
+			// Transient (engine down, timeout): never drop, since a dropped revocation keeps access
+			// forever. Later events wait behind it, in order.
+			if attempts == alertAttempts {
+				r.Log.Error("outbox event still failing; relay keeps retrying", "id", x.id, "type", x.ev.Type, "attempts", attempts, "err", err)
 			}
 			_, _ = tx.Exec(ctx, `UPDATE outbox SET attempts=$2, last_error=$3 WHERE id=$1`, x.id, attempts, err.Error())
 			applyErr = fmt.Errorf("outbox %d (%s): %w", x.id, x.ev.Type, err)

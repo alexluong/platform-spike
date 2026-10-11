@@ -5,6 +5,7 @@ package authz
 
 import (
 	"context"
+	"errors"
 	"time"
 )
 
@@ -109,6 +110,14 @@ const (
 
 // RelationSync applies outbox events to the engine. Stateless engines (Cerbos)
 // would implement it as a no-op.
+//
+// Errors are retried forever (in order) unless they wrap ErrPermanent: an event the
+// engine will never accept (unknown type, rejected by the schema). Only those are
+// dead-lettered. Dropping a transient failure would silently leave a revocation
+// (uninstall, unassign, revoke) unapplied.
 type RelationSync interface {
 	Apply(ctx context.Context, ev Event) error
 }
+
+// ErrPermanent marks a RelationSync error that retrying cannot fix.
+var ErrPermanent = errors.New("permanent sync error")
