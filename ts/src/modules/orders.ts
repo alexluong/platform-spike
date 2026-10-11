@@ -7,6 +7,9 @@ import { defineAction } from '../kernel/action.js'
 import { conflict, forbidden, invalid, notFound } from '../kernel/errors.js'
 import { findOrder, findStore, storeResource } from './lookup.js'
 
+/** Largest quantity per order line (SPEC §9 input bounds). */
+export const MAX_QTY = 1_000_000
+
 export const orderOut = (o: typeof orders.$inferSelect) => ({
   id: o.id,
   storeId: o.storeId,
@@ -24,7 +27,7 @@ export function orderActions() {
     kinds: ['customer'],
     input: z.object({
       storeId: z.string(),
-      items: z.array(z.object({ productId: z.string().min(1), qty: z.number().int().positive() })).min(1),
+      items: z.array(z.object({ productId: z.string().min(1), qty: z.number().int().min(1).max(MAX_QTY) })).min(1),
     }),
     authorize: async () => null, // customer action, checked in SQL (SPEC §4)
     async run({ tx, principal, emit }, i) {
@@ -140,7 +143,7 @@ export function orderActions() {
         .from(payments)
         .where(and(eq(payments.orderId, o!.id), eq(payments.status, 'captured')))
       const captured = caps.reduce((n, p) => n + p.amountCents, 0)
-      if (captured === 0) throw conflict('not_captured', 'no captured payment')
+      if (captured === 0) throw conflict('invalid_transition', 'no captured payment') // unreachable: a paid order is captured
       if (o!.refundedCents + i.amountCents > captured) throw conflict('over_refund', 'refund exceeds captured amount')
       await tx.insert(payments).values({ id: newId('pay'), merchantId: o!.merchantId, orderId: o!.id, status: 'refunded', amountCents: i.amountCents })
       const [u] = await tx
