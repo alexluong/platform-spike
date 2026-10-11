@@ -84,3 +84,4 @@ Reviewed 2026-10-11 on branch `review-a` (from `go-a` at 5350c88). Read the spec
 6. **§9: input bounds.** `qty`, `priceCents`, `expiresInSeconds`, `minutes`, `refundLimitCents` need upper bounds (overflow), and the spec should name the 400 code.
 7. **§11: test mode.** Require a random `TEST_SECRET` per stack (no default), and say that test-mode endpoints may expose IdP credentials, so the app port must not be reachable beyond the test host.
 8. **§10: token validation.** Name the checks: `iss`, `aud`, `exp`, alg allowlist, **and** token type/`azp`. "JWT via JWKS" alone lets ID tokens and other clients' tokens through.
+9. **§5/§6: delegates never administer.** Agents get the apps' blocked list (`role.manage`, `member.manage`, `agent.grant`, `app.install`, `app.uninstall`), so nothing a grant enables outlives the grant (finding 18).
