@@ -46,7 +46,7 @@ func (m *Module) install(ctx context.Context, r *core.Req) (any, error) {
 	var requested []string
 	err := r.Tx.QueryRow(ctx, `SELECT scopes FROM apps WHERE id=$1`, in.AppID).Scan(&requested)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return nil, core.E(http.StatusBadRequest, "invalid_input", "unknown app")
+		return nil, core.ErrNotFound // an unknown id is 404 wherever it appears (SPEC §9)
 	} else if err != nil {
 		return nil, err
 	}

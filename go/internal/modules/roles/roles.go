@@ -374,6 +374,19 @@ func (m *Module) unassign(ctx context.Context, r *core.Req) (any, error) {
 		if err := ownerRule(ctx, r, mid); err != nil {
 			return nil, err
 		}
+	}
+	// Taking a role away needs the same as handing it out (SPEC §3): every permission of the role
+	// at the assignment's scope, and a refund limit at least as high. Otherwise a lesser manager
+	// could strip a stronger member's role, and role delete (which removes every assignment of
+	// the role) would be guarded while removing them one by one wasn't.
+	role, err := Load(ctx, r.Tx, mid, a.RoleID)
+	if err != nil {
+		return nil, err
+	}
+	if err := guard(ctx, r, r.Target, role.Permissions, role.RefundLimitCents); err != nil {
+		return nil, err
+	}
+	if a.RoleID == perm.RoleOwner {
 		if a.Scope.Type == "merchant" {
 			var n int
 			if err := r.Tx.QueryRow(ctx, `SELECT count(*) FROM (SELECT id FROM role_assignments WHERE merchant_id=$1 AND role_id='owner' AND scope_type='merchant' FOR UPDATE) x`, mid).Scan(&n); err != nil {

@@ -9,6 +9,7 @@ import (
 	"github.com/alexluong/platform-spike/go/internal/core"
 	"github.com/alexluong/platform-spike/go/internal/db"
 	"github.com/alexluong/platform-spike/go/internal/modules/scope"
+	"github.com/alexluong/platform-spike/go/internal/perm"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -48,7 +49,18 @@ func (m *Module) create(ctx context.Context, r *core.Req) (any, error) {
 }
 
 // list: stores of the merchant (SQL, tenant-scoped) the caller has store.view on (batch can).
+// Platform staff reach merchant data only through break-glass: without one the list is 403, not
+// an empty 200 (SPEC §7). The check holds store.view at the merchant and audits the request.
 func (m *Module) list(ctx context.Context, r *core.Req) (any, error) {
+	if r.P.Kind == perm.KindPlatform {
+		ok, err := r.CanMany(ctx, []core.Check{{Action: "store.view", Target: r.Target}})
+		if err != nil {
+			return nil, err
+		}
+		if !ok[0] {
+			return nil, core.ErrForbidden
+		}
+	}
 	rows, err := r.Tx.Query(ctx, `SELECT id, merchant_id, name FROM stores WHERE merchant_id=$1 ORDER BY created_at`, r.Target.MerchantID)
 	if err != nil {
 		return nil, err

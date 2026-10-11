@@ -47,7 +47,7 @@ export function appActions(deps: { clients: ClientRegistry }) {
       if (!a) throw notFound('app')
       const scopes = [...new Set(i.scopes)]
       const extra = scopes.filter((x) => !a.requestedScopes.includes(x))
-      if (extra.length) throw invalid('invalid_input', `not requested by the app: ${extra.join(', ')}`)
+      if (extra.length) throw invalid('scope_not_requested', `not requested by the app: ${extra.join(', ')}`)
       await assertHoldsAll(can, scopes, storeResource(s.id))
       const [x] = await tx
         .insert(appInstalls)

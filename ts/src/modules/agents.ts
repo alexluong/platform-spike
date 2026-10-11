@@ -45,6 +45,10 @@ export function agentActions(deps: { clients: ClientRegistry }) {
     authorize: async ({ db, principal }, i) => ({ action: 'agent.grant', resource: storeResource((await findStore(db, principal, i.storeId)).id) }),
     async run({ tx, principal, can, emit }, i) {
       const s = await findStore(tx, principal, i.storeId)
+      // Order (same as a/b): the request body first (400 not_grantable), then the agent (404), then
+      // who may grant it (403), then the guardrail (403 escalation).
+      const bad = i.permissions.filter((p) => !isGrantable(p))
+      if (bad.length) throw invalid('not_grantable', `not grantable: ${bad.join(', ')}`)
       const [a] = await tx
         .select()
         .from(agents)
@@ -53,8 +57,6 @@ export function agentActions(deps: { clients: ClientRegistry }) {
       // Only the registrant grants their agent: otherwise an ex-member's agent keeps working under a
       // teammate's grant (review-a finding 1; same rule as stack a/b).
       if (a.createdBy !== principal.id) throw forbidden('forbidden', "only the agent's registrant can grant it")
-      const bad = i.permissions.filter((p) => !isGrantable(p))
-      if (bad.length) throw invalid('not_grantable', `not grantable: ${bad.join(', ')}`)
       const permissions = [...new Set(i.permissions)]
       await assertHoldsAll(can, permissions, storeResource(s.id))
       const expiresAt = new Date(Date.now() + i.expiresInSeconds * 1000)

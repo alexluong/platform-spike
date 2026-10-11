@@ -68,7 +68,7 @@ async function scopeResource(db: Queryable, merchantId: string, scope: { type: '
     .select({ id: stores.id })
     .from(stores)
     .where(and(eq(stores.id, scope.id), eq(stores.merchantId, merchantId)))
-  if (!s) throw invalid('invalid_input', 'store not in this merchant')
+  if (!s) throw notFound('store') // another merchant's store is hidden like any cross-tenant resource
   return storeResource(s.id)
 }
 
@@ -169,6 +169,19 @@ export function roleActions() {
         .from(members)
         .where(and(eq(members.userId, i.userId), eq(members.merchantId, i.merchantId)))
       if (!m) throw invalid('not_member', 'user is not a member of this merchant')
+      const [dup] = await tx
+        .select({ id: roleAssignments.id })
+        .from(roleAssignments)
+        .where(
+          and(
+            eq(roleAssignments.merchantId, i.merchantId),
+            eq(roleAssignments.userId, i.userId),
+            eq(roleAssignments.roleId, role.id),
+            eq(roleAssignments.scopeType, i.scope.type),
+            eq(roleAssignments.scopeId, i.scope.id),
+          ),
+        )
+      if (dup) throw conflict('already_assigned', 'the user already holds this role at this scope')
       const [a] = await tx
         .insert(roleAssignments)
         .values({ id: newId('ra'), merchantId: i.merchantId, userId: i.userId, roleId: role.id, scopeType: i.scope.type, scopeId: i.scope.id })

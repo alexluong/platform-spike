@@ -105,7 +105,7 @@ The cost is DB reads per check: about 2–4 queries per principal per request; a
 
 - Merchant-scope permissions held at a store count for guardrails (AMBIGUITIES #3); `/me/permissions?merchantId=` reports merchant-scope actions only (AMBIGUITIES #1).
 - An agent's grant may list any grantable action. The policy does not stop agents from holding `role.manage` / `agent.grant` (the spec doesn't forbid it; apps are blocked).
-- Unassign applies the same guardrail as assign (hold the role's permissions at the scope). The suite doesn't test escalation on unassign.
+- Unassign applies the same guardrail as assign (hold the role's permissions at the scope). Now the rule for all stacks (SPEC §3) and tested.
 - PATCH/DELETE of a system role → 403 `system_role`.
-- 409 codes: `invalid_transition` for every status precondition, `over_refund`, `not_captured`, `last_owner`, `already_member`.
+- 409 codes: `invalid_transition` for every status precondition, `over_refund`, `last_owner`, `already_member`, `already_assigned` (`not_captured` removed in the alignment: unreachable).
 - No endpoint lists role assignments (as the suite also notes); not added.
