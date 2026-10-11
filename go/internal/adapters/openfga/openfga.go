@@ -187,6 +187,9 @@ func sameModel(want client.ClientWriteAuthorizationModelRequest, got *fga.Author
 		want.SchemaVersion == got.SchemaVersion
 }
 
+// meaningfulEmpty are keys whose empty-object value carries meaning in a model.
+var meaningfulEmpty = map[string]bool{"wildcard": true, "this": true}
+
 func prune(v any) any {
 	switch x := v.(type) {
 	case map[string]any:
@@ -194,6 +197,8 @@ func prune(v any) any {
 		for k, val := range x {
 			if p := prune(val); p != nil {
 				out[k] = p
+			} else if m, ok := val.(map[string]any); ok && len(m) == 0 && meaningfulEmpty[k] {
+				out[k] = m // "wildcard": {} (user:*) and "this": {} (direct) are not empty fields
 			}
 		}
 		if len(out) == 0 {

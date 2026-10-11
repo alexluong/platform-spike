@@ -58,7 +58,33 @@ func (c *Client) Verify(ctx context.Context, bearer string) (identity.Token, err
 	if err != nil {
 		return identity.Token{}, fmt.Errorf("%w: %v", identity.ErrInvalidToken, err)
 	}
+	var claims struct {
+		ClientID string `json:"client_id"`
+	}
+	if err := tok.Claims(&claims); err != nil {
+		return identity.Token{}, fmt.Errorf("%w: %v", identity.ErrInvalidToken, err)
+	}
+	if err := checkAccessToken(claims.ClientID, tok.Subject, c.cfg.ClientID); err != nil {
+		return identity.Token{}, fmt.Errorf("%w: %v", identity.ErrInvalidToken, err)
+	}
 	return identity.Token{Subject: tok.Subject}, nil
+}
+
+// checkAccessToken accepts only Hydra JWT access tokens from our own clients. The
+// verifier above is go-oidc's ID-token verifier: it checks signature, iss, exp and
+// that aud contains the API audience, which an ID token also passes when some
+// client's id equals the audience (Hydra lets the admin API pick client ids). Hydra
+// puts client_id in access tokens, never in ID tokens. Accepted: the login
+// driver's client (user tokens), or client_credentials (client_id == sub: apps
+// and agents; an unknown client id maps to no principal).
+func checkAccessToken(clientID, subject, loginClientID string) error {
+	switch {
+	case clientID == "":
+		return fmt.Errorf("not an access token (no client_id)")
+	case clientID == loginClientID, clientID == subject:
+		return nil
+	}
+	return fmt.Errorf("token from client %q not accepted", clientID)
 }
 
 // Ping checks Kratos and Hydra are ready.
