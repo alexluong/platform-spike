@@ -1,0 +1,99 @@
+# zed validate validation.yaml  — schema assertions for stack a (run by schema_test.go and the Docker build)
+schemaFile: ./schema.zed
+relationships: |-
+  platform:main#admin@staff:pa
+  platform:main#support@staff:sup
+  merchant:m1#platform@platform:main
+  merchant:m1#any_user@user:*
+  store:s1#merchant@merchant:m1
+  store:s1#any_user@user:*
+  store:s2#merchant@merchant:m1
+  store:s2#any_user@user:*
+  role:mgr#order_view@user:*
+  role:mgr#order_view@agent:*
+  role:mgr#order_refund@user:*
+  role:mgr#order_refund@agent:*
+  role:mgr#role_manage@user:*
+  role:mgr#role_manage@agent:*
+  role:clerk#order_view@user:*
+  role:clerk#order_view@agent:*
+  role:clerk#order_refund@user:*[refund_limit:{"limit":1000}]
+  role:clerk#order_refund@agent:*[refund_limit:{"limit":1000}]
+  role:owner#role_manage_owner@user:*
+  role_binding:b1#subject@user:alice
+  role_binding:b1#subject@user:alice#delegate
+  role_binding:b1#role@role:mgr
+  merchant:m1#binding@role_binding:b1
+  role_binding:b0#subject@user:olga
+  role_binding:b0#subject@user:olga#delegate
+  role_binding:b0#role@role:owner
+  merchant:m1#binding@role_binding:b0
+  role_binding:b2#subject@user:carol
+  role_binding:b2#subject@user:carol#delegate
+  role_binding:b2#role@role:clerk
+  store:s1#binding@role_binding:b2
+  agent_grant:g1#agent@agent:bot[expiration:2099-01-01T00:00:00Z]
+  agent_grant:g1#order_view@agent:bot[expiration:2099-01-01T00:00:00Z]
+  agent_grant:g1#order_refund@agent:bot[expiration:2099-01-01T00:00:00Z]
+  user:carol#delegate@agent_grant:g1#agent
+  store:s1#grant@agent_grant:g1
+  agent_grant:g2#agent@agent:old[expiration:2020-01-01T00:00:00Z]
+  agent_grant:g2#order_view@agent:old[expiration:2020-01-01T00:00:00Z]
+  user:carol#delegate@agent_grant:g2#agent
+  store:s1#grant@agent_grant:g2
+  agent_grant:g3#agent@agent:orphan[expiration:2099-01-01T00:00:00Z]
+  agent_grant:g3#order_view@agent:orphan[expiration:2099-01-01T00:00:00Z]
+  user:dave#delegate@agent_grant:g3#agent
+  store:s1#grant@agent_grant:g3
+  app_install:i1#order_view@app:shopapp
+  store:s1#install@app_install:i1
+  merchant:m1#break_glass_viewer@staff:sup[expiration:2099-01-01T00:00:00Z]
+  merchant:m1#break_glass_viewer@staff:pa[expiration:2020-01-01T00:00:00Z]
+  merchant:m2#platform@platform:main
+  merchant:m2#any_user@user:*
+  merchant:m2#suspended@user:*
+  merchant:m2#suspended@agent:*
+  merchant:m2#suspended@app:*
+  store:t1#merchant@merchant:m2
+  store:t1#any_user@user:*
+  role_binding:b3#subject@user:erin
+  role_binding:b3#role@role:mgr
+  merchant:m2#binding@role_binding:b3
+assertions:
+  assertTrue:
+    - store:s1#order_view@user:alice
+    - store:s2#order_view@user:alice
+    - 'store:s1#order_refund@user:alice with {"amount": 9007199254740992}'
+    - merchant:m1#role_manage@user:alice
+    - store:s1#role_manage@user:alice
+    - merchant:m1#role_manage_owner@user:olga
+    - store:s1#order_view@user:carol
+    - 'store:s1#order_refund@user:carol with {"amount": 1000}'
+    - store:s1#order_view@agent:bot
+    - 'store:s1#order_refund@agent:bot with {"amount": 500}'
+    - store:s1#order_view@app:shopapp
+    - store:s1#order_view@staff:sup
+    - merchant:m1#order_view@staff:sup
+    - platform:main#platform_merchant_create@staff:pa
+    - platform:main#platform_merchant_view@staff:sup
+    - merchant:m1#platform_break_glass@staff:sup
+  assertCaveated:
+    - store:s1#order_refund@user:carol
+  assertFalse:
+    - merchant:m1#role_manage_owner@user:alice
+    - store:s2#order_view@user:carol
+    - merchant:m1#order_view@user:carol
+    - 'store:s1#order_refund@user:carol with {"amount": 1001}'
+    - 'store:s1#order_refund@agent:bot with {"amount": 5000}'
+    - store:s2#order_view@agent:bot
+    - store:s1#role_manage@agent:bot
+    - merchant:m1#order_view@agent:bot
+    - store:s1#order_view@agent:old
+    - store:s1#order_view@agent:orphan
+    - store:s1#order_cancel@app:shopapp
+    - store:s2#order_view@app:shopapp
+    - store:s1#order_cancel@staff:sup
+    - store:s1#order_view@staff:pa
+    - store:t1#order_view@user:erin
+    - store:t1#order_view@user:alice
+    - platform:main#platform_merchant_create@staff:sup
