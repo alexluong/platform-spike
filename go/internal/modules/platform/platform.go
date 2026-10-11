@@ -208,7 +208,7 @@ func (m *Module) audit(ctx context.Context, r *core.Req) (any, error) {
 		q += ` WHERE merchant_id=$1`
 		args = append(args, mid)
 	}
-	rows, err := r.Tx.Query(ctx, q+` ORDER BY id DESC LIMIT 500`, args...)
+	rows, err := r.Tx.Query(ctx, q+` ORDER BY at DESC, id DESC LIMIT 500`, args...)
 	if err != nil {
 		return nil, err
 	}

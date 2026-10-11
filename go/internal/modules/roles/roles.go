@@ -294,7 +294,9 @@ func (m *Module) assign(ctx context.Context, r *core.Req) (any, error) {
 		return nil, core.BadInput("userId and roleId are required")
 	}
 	var member *string
-	err := r.Tx.QueryRow(ctx, `SELECT merchant_id FROM users WHERE id=$1`, in.UserID).Scan(&member)
+	// FOR SHARE: a concurrent member removal (FOR UPDATE on the user) can't slip between
+	// this check and the insert and leave an assignment on a non-member.
+	err := r.Tx.QueryRow(ctx, `SELECT merchant_id FROM users WHERE id=$1 FOR SHARE`, in.UserID).Scan(&member)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, core.ErrNotFound
 	} else if err != nil {

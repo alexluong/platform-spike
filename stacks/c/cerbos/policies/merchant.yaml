@@ -1,0 +1,101 @@
+# Checks at merchant scope (resource id = merchant id).
+#
+# Custom roles are data: the app (PIP) resolves the caller's role assignments from its DB and
+# sends them as principal attributes. Cerbos holds the platform policy (what a permission means,
+# tenancy, suspension, limits, break-glass). Merchants never write policy.
+#
+# Principal attributes (user):
+#   merchantId:   string ("" when not a member)
+#   access: {
+#     owner: bool                      holds the system `owner` role at merchant scope
+#     merchantPerms: [action]          union of perms of roles assigned at merchant scope
+#     merchantRefundLimits: [int]      one per merchant-scope role that has order.refund (-1 = no limit)
+#     stores: { <storeId>: { perms: [action], refundLimits: [int] } }   store-scope assignments
+#   }
+# Principal attributes (platform staff): breakGlass: { <merchantId>: <RFC3339 expiry> }
+# Resource attributes: merchantId, status ("active" | "suspended"), amountCents? (order.refund guardrail)
+#
+# Cerbos CEL can't see the action being evaluated, so each permission is one rule that names it.
+apiVersion: api.cerbos.dev/v1
+resourcePolicy:
+  version: default
+  resource: merchant
+  variables:
+    local:
+      sameTenant: has(P.attr.merchantId) && P.attr.merchantId != "" && P.attr.merchantId == R.attr.merchantId
+      granted: >
+        ("user" in P.roles && V.sameTenant && has(P.attr.access)) ? P.attr.access.merchantPerms : []
+      refundOk: >
+        !has(R.attr.amountCents) ||
+        P.attr.access.merchantRefundLimits.exists(l, l < 0 || R.attr.amountCents <= l)
+      breakGlass: >
+        has(P.attr.breakGlass) && R.attr.merchantId in P.attr.breakGlass &&
+        now() < timestamp(P.attr.breakGlass[R.attr.merchantId])
+  rules:
+    # --- suspension: deny everything for the merchant's own principals (others get a plain deny,
+    #     so a suspension isn't visible across tenants; apps and agents have no merchant rules) ---
+    - name: merchant_suspended
+      actions: ["*"]
+      effect: EFFECT_DENY
+      roles: ["user", "app", "agent"]
+      condition:
+        match:
+          expr: R.attr.status == "suspended" && V.sameTenant
+      output:
+        when:
+          ruleActivated: '"merchant_suspended"'
+
+    # --- merchant users: one rule per grantable permission (checked at merchant scope) ---
+    - { name: merchant_view,   actions: ["merchant.view"],   effect: EFFECT_ALLOW, roles: ["user"], condition: { match: { expr: '"merchant.view" in V.granted' } } }
+    - { name: merchant_update, actions: ["merchant.update"], effect: EFFECT_ALLOW, roles: ["user"], condition: { match: { expr: '"merchant.update" in V.granted' } } }
+    - { name: member_manage,   actions: ["member.manage"],   effect: EFFECT_ALLOW, roles: ["user"], condition: { match: { expr: '"member.manage" in V.granted' } } }
+    - { name: role_manage,     actions: ["role.manage"],     effect: EFFECT_ALLOW, roles: ["user"], condition: { match: { expr: '"role.manage" in V.granted' } } }
+    - { name: store_create,    actions: ["store.create"],    effect: EFFECT_ALLOW, roles: ["user"], condition: { match: { expr: '"store.create" in V.granted' } } }
+    - { name: store_view,      actions: ["store.view"],      effect: EFFECT_ALLOW, roles: ["user"], condition: { match: { expr: '"store.view" in V.granted' } } }
+    - { name: product_create,  actions: ["product.create"],  effect: EFFECT_ALLOW, roles: ["user"], condition: { match: { expr: '"product.create" in V.granted' } } }
+    - { name: product_update,  actions: ["product.update"],  effect: EFFECT_ALLOW, roles: ["user"], condition: { match: { expr: '"product.update" in V.granted' } } }
+    - { name: product_view,    actions: ["product.view"],    effect: EFFECT_ALLOW, roles: ["user"], condition: { match: { expr: '"product.view" in V.granted' } } }
+    - { name: order_view,      actions: ["order.view"],      effect: EFFECT_ALLOW, roles: ["user"], condition: { match: { expr: '"order.view" in V.granted' } } }
+    - { name: order_cancel,    actions: ["order.cancel"],    effect: EFFECT_ALLOW, roles: ["user"], condition: { match: { expr: '"order.cancel" in V.granted' } } }
+    - { name: order_refund,    actions: ["order.refund"],    effect: EFFECT_ALLOW, roles: ["user"], condition: { match: { expr: '"order.refund" in V.granted && V.refundOk' } } }
+    - { name: payment_capture, actions: ["payment.capture"], effect: EFFECT_ALLOW, roles: ["user"], condition: { match: { expr: '"payment.capture" in V.granted' } } }
+    - { name: payment_view,    actions: ["payment.view"],    effect: EFFECT_ALLOW, roles: ["user"], condition: { match: { expr: '"payment.view" in V.granted' } } }
+    - { name: shipment_create, actions: ["shipment.create"], effect: EFFECT_ALLOW, roles: ["user"], condition: { match: { expr: '"shipment.create" in V.granted' } } }
+    - { name: shipment_update, actions: ["shipment.update"], effect: EFFECT_ALLOW, roles: ["user"], condition: { match: { expr: '"shipment.update" in V.granted' } } }
+    - { name: shipment_view,   actions: ["shipment.view"],   effect: EFFECT_ALLOW, roles: ["user"], condition: { match: { expr: '"shipment.view" in V.granted' } } }
+    - { name: app_install,     actions: ["app.install"],     effect: EFFECT_ALLOW, roles: ["user"], condition: { match: { expr: '"app.install" in V.granted' } } }
+    - { name: app_uninstall,   actions: ["app.uninstall"],   effect: EFFECT_ALLOW, roles: ["user"], condition: { match: { expr: '"app.uninstall" in V.granted' } } }
+    - { name: app_view,        actions: ["app.view"],        effect: EFFECT_ALLOW, roles: ["user"], condition: { match: { expr: '"app.view" in V.granted' } } }
+    - { name: agent_grant,     actions: ["agent.grant"],     effect: EFFECT_ALLOW, roles: ["user"], condition: { match: { expr: '"agent.grant" in V.granted' } } }
+
+    # --- platform policy for merchant users (not grantable) ---
+    - name: role_manage_owner          # only an owner assigns/removes the owner role
+      actions: ["role.manage_owner"]
+      effect: EFFECT_ALLOW
+      roles: ["user"]
+      condition:
+        match:
+          expr: V.sameTenant && P.attr.access.owner
+    - name: agent_register             # any member of the merchant
+      actions: ["agent.register"]
+      effect: EFFECT_ALLOW
+      roles: ["user"]
+      condition:
+        match:
+          expr: V.sameTenant
+
+    # --- platform staff ---
+    - name: break_glass_open
+      actions: ["platform.break_glass"]
+      effect: EFFECT_ALLOW
+      roles: ["platform_admin", "support"]
+    - name: break_glass_read           # read-only, until expiry; the app audits every use
+      actions: ["merchant.view", "store.view", "product.view", "order.view", "payment.view", "shipment.view", "app.view"]
+      effect: EFFECT_ALLOW
+      roles: ["platform_admin", "support"]
+      condition:
+        match:
+          expr: V.breakGlass
+      output:
+        when:
+          ruleActivated: '"break_glass"'

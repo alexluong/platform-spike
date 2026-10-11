@@ -149,6 +149,15 @@ describe('suspended merchant', () => {
     ok(await agent.api.get(`/api/stores/${s.id}/orders`), 200)
   })
 
+  test('an app of another merchant does not learn that a merchant is suspended (regression: review-c)', async () => {
+    const [{ m, s }, B] = await Promise.all([merchantWithStore(), merchantWithStore()])
+    const app = await installedApp(B.m.owner, B.s.id, ['order.view'])
+    await m.suspend()
+    const res = await app.api.get(`/api/stores/${s.id}/orders`)
+    expectDenied(res, { crossTenant: true })
+    expect(res.body?.error?.code).not.toBe('merchant_suspended')
+  })
+
   test('customers cannot place orders (403); reinstate restores', async () => {
     const { m, s } = await merchantWithStore()
     const p = await m.product(s.id, 500)

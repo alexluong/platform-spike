@@ -49,6 +49,15 @@ describe('opening a break-glass grant', () => {
 })
 
 describe('under break-glass', () => {
+  test('listing a merchant\'s stores is audited too (regression: resource search skipped the audit)', async () => {
+    const [support, { m, s }] = await Promise.all([newSupport(), merchantWithStore()])
+    await openBreakGlass(support, m.id)
+    const items = ok(await support.api.get<Items<{ id: string }>>(`/api/merchants/${m.id}/stores`), 200).items
+    expect(items.map((x) => x.id)).toContain(s.id)
+    const mine = (await audit(m.id)).filter((e) => isActor(e, support) && e.action !== 'platform.break_glass')
+    expect(mine.length, JSON.stringify(mine)).toBeGreaterThanOrEqual(1)
+  })
+
   test('*.view reads succeed; each one is audited; entries are newest first', async () => {
     const [support, { m, s }] = await Promise.all([newSupport(), merchantWithStore()])
     const order = await m.paidOrder(s.id, 1200)
@@ -80,6 +89,16 @@ describe('under break-glass', () => {
     // newest first
     const times = entries.map((e) => Date.parse(e.at))
     for (let i = 1; i < times.length; i++) expect(times[i - 1]).toBeGreaterThanOrEqual(times[i])
+  })
+
+  test('listing stores (GET /api/merchants/:mid/stores) under break-glass is audited too', async () => {
+    const [support, { m, s }] = await Promise.all([newSupport(), merchantWithStore()])
+    await openBreakGlass(support, m.id)
+    const count = async () => (await audit(m.id)).filter((e) => isActor(e, support) && e.action !== 'platform.break_glass').length
+    const before = await count()
+    const stores = ok(await support.api.get<Items<{ id: string }>>(`/api/merchants/${m.id}/stores`), 200).items
+    expect(stores.map((x) => x.id)).toContain(s.id)
+    expect(await count()).toBeGreaterThan(before)
   })
 
   test('/api/me/permissions reports only *.view actions', async () => {

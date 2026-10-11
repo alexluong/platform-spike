@@ -132,6 +132,12 @@ func (r *Req) CanMany(ctx context.Context, checks []Check) ([]bool, error) {
 	out := make([]bool, len(ds))
 	for i, d := range ds {
 		out[i] = d.Decision
+		// Lists filtered by canMany (AuthAny ops) read merchant data too: audit break-glass here as well.
+		if d.Decision {
+			if err := r.auditBreakGlass(ctx, checks[i].Action, checks[i].Target.MerchantID); err != nil {
+				return nil, err
+			}
+		}
 	}
 	return out, nil
 }
@@ -150,6 +156,7 @@ const (
 	ReasonScope         = "scope"
 	ReasonTenant        = "tenant"
 	ReasonSuspended     = "merchant_suspended"
+	ReasonNotInstalled  = "app_not_installed"
 )
 
 // precheck: token/scope check, tenant isolation, suspension. Returns a deny decision or nil.
@@ -166,6 +173,20 @@ func (e *Executor) precheck(ctx context.Context, q Querier, p *Principal, action
 	}
 	if t.MerchantID != "" && (p.Kind == perm.KindUser || p.Kind == perm.KindAgent) && p.MerchantID != t.MerchantID {
 		return &authz.Decision{Reason: ReasonTenant}, nil
+	}
+	// Apps have no merchant: their tenant boundary is the install. Check it in SQL too, so a
+	// wrong relationship in the engine alone can't open another store (SPEC §1.6 "twice").
+	if t.MerchantID != "" && p.Kind == perm.KindApp {
+		if t.Resource.Type != string(perm.ScopeStore) {
+			return &authz.Decision{Reason: ReasonNotInstalled}, nil // apps act on stores only
+		}
+		var installed bool
+		if err := q.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM app_installs WHERE app_id=$1 AND store_id=$2)`, p.ID, t.Resource.ID).Scan(&installed); err != nil {
+			return nil, err
+		}
+		if !installed {
+			return &authz.Decision{Reason: ReasonNotInstalled}, nil
+		}
 	}
 	if t.MerchantID != "" && p.Kind != perm.KindPlatform {
 		var status string
@@ -310,7 +331,7 @@ func (e *Executor) run(ctx context.Context, op Op, hr *http.Request) (any, error
 		if !d.Decision {
 			return nil, denial(d)
 		}
-		if err := r.auditBreakGlass(ctx, op.Action); err != nil {
+		if err := r.auditBreakGlass(ctx, op.Action, r.Target.MerchantID); err != nil {
 			return nil, err
 		}
 	}
@@ -332,14 +353,15 @@ func (e *Executor) run(ctx context.Context, op Op, hr *http.Request) (any, error
 	return out, nil
 }
 
-// auditBreakGlass: staff reading merchant data is only possible under break-glass; audit every such request.
-func (r *Req) auditBreakGlass(ctx context.Context, action string) error {
+// auditBreakGlass: staff reading merchant data is only possible under break-glass; audit every
+// such request (once: the first allowed merchant-data check of the request).
+func (r *Req) auditBreakGlass(ctx context.Context, action, merchantID string) error {
 	a, _ := perm.Get(action)
-	if r.P.Kind != perm.KindPlatform || r.Target.MerchantID == "" || !a.Grantable || r.auditDone {
+	if r.P == nil || r.P.Kind != perm.KindPlatform || merchantID == "" || !a.Grantable || r.auditDone {
 		return nil
 	}
 	r.auditDone = true
-	return Audit(ctx, r.Tx, r.P.ID, action, r.Target.MerchantID, r.Now)
+	return Audit(ctx, r.Tx, r.P.ID, action, merchantID, r.Now)
 }
 
 // Audit writes an audit entry.

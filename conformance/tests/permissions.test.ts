@@ -91,3 +91,18 @@ describe('input', () => {
     expectError(await m.owner.api.get('/api/me/permissions'), 400)
   })
 })
+
+describe('under concurrent load', () => {
+  // Regression (review-c): an executor that holds a DB connection for the transaction while can()
+  // borrows another from the same pool deadlocks once the pool is full, and never recovers.
+  test('60 concurrent permission checks and 30 concurrent guarded role creates all succeed', async () => {
+    const { m, s } = await merchantWithStore()
+    const reads = await Promise.all(Array.from({ length: 60 }, () => m.owner.api.get(`/api/me/permissions?storeId=${s.id}`)))
+    expect(reads.map((r) => r.status)).toEqual(reads.map(() => 200))
+    const writes = await Promise.all(
+      Array.from({ length: 30 }, (_, i) => m.owner.api.post(`/api/merchants/${m.id}/roles`, { name: `burst-${i}`, permissions: ['order.view', 'order.refund'] })),
+    )
+    expect(writes.map((r) => r.status)).toEqual(writes.map(() => 201))
+    ok(await m.owner.api.get(`/api/merchants/${m.id}`), 200)
+  })
+})

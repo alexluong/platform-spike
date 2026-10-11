@@ -51,7 +51,7 @@ Where `spec/SPEC.md` is unclear, the suite picks one reading and tests it. Each 
 33. **§5 registering with a non-grantable (platform.*) scope.** **Reading:** 400 with `not_grantable`, `not_grantable_to_apps` or `invalid_input`.
 34. **§5 app access to merchant-level endpoints** (role/store creation, agent registration). **Reading:** denied (apps act on stores only).
 35. **§5 one app installed on several merchants.** **Reading:** allowed; installs are independent. Installing the same app twice on one store: not tested.
-36. **§6 which agents a user may grant.** The suite only grants agents the granting user registered (plus: another merchant's agent → 400/403/404). Granting a teammate's agent is not tested.
+36. **§6 which agents a user may grant.** The suite only grants agents the granting user registered (plus: another merchant's agent → 400/403/404). Granting a teammate's agent: a stack may refuse it (any 4xx); if it accepts, removing the agent's registrant from the merchant must cut the agent off (the ex-member still holds its secret). Tested: `agents.test.ts`. Stack a refuses (registrant-only grants; see `results/review-a.md`).
 37. **§6 who may register agents.** **Reading:** merchant users only; platform staff, customers and users with no merchant → 403.
 38. **§6 expired/revoked grant.** **Reading:** the agent token stays valid (no 401); requests → 403.
 39. **§6 agent's `/api/me`.** `{kind: "agent", merchantId}` of the registering user's merchant. App's `/api/me`: `kind: "app"`, `merchantId` not asserted.

@@ -28,11 +28,12 @@ var (
 func BadInput(msg string) *Err  { return E(http.StatusBadRequest, "invalid_input", msg) }
 func Conflict(code string) *Err { return E(http.StatusConflict, code, "") }
 
-// AsErr maps any error to an API error (unknown errors are 500).
+// AsErr maps any error to an API error. Unknown errors are a 500 without the
+// cause (SQL, engine and IdP errors stay in the log, not the response).
 func AsErr(err error) *Err {
 	var e *Err
 	if errors.As(err, &e) {
 		return e
 	}
-	return E(http.StatusInternalServerError, "internal", err.Error())
+	return E(http.StatusInternalServerError, "internal", "")
 }

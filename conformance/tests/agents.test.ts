@@ -133,6 +133,14 @@ describe('grants', () => {
   })
 })
 
+describe('grant input', () => {
+  test('an absurd expiresInSeconds is a 400, not a 500 (regression: review-c, invalid date)', async () => {
+    const { m, s } = await merchantWithStore()
+    const creds = await registerAgent(m.owner)
+    expectStatus(await m.owner.api.post(`/api/stores/${s.id}/agent-grants`, { agentId: creds.id, permissions: ['order.view'], expiresInSeconds: 1e13 }), 400)
+  })
+})
+
 describe('the granting user must still hold the action', () => {
   test('removing the granting user’s role assignment cuts the agent off', async () => {
     const { m, s } = await merchantWithStore()
@@ -160,6 +168,23 @@ describe('the granting user must still hold the action', () => {
     const { m, s } = await merchantWithStore()
     const u = await m.memberWithPerms(['agent.grant', 'order.view'], m.scope, { label: 'granter' })
     const agent = await grantedAgent(u, s.id, ['order.view'])
+    ok(await agent.api.get(`/api/stores/${s.id}/orders`), 200)
+    expectStatus(await m.owner.api.delete(`/api/merchants/${m.id}/members/${u.id}`), 204)
+    expectDenied(await agent.api.get(`/api/stores/${s.id}/orders`))
+  })
+  test('an agent whose registrant left the merchant can do nothing, even under a teammate’s grant', async () => {
+    // The ex-member still holds the agent's client secret. A stack may refuse grants of another
+    // user's agent (4xx); if it accepts one, removing the registrant must still cut the agent off.
+    const { m, s } = await merchantWithStore()
+    const u = await m.memberWithPerms(['order.view'], m.scope, { label: 'registrant' })
+    const creds = await registerAgent(u)
+    const r = await m.owner.api.post<Grant>(`/api/stores/${s.id}/agent-grants`, { agentId: creds.id, permissions: ['order.view'], expiresInSeconds: 600 })
+    if (r.status !== 201) {
+      expect(r.status, r.text).toBeGreaterThanOrEqual(400)
+      expect(r.status, r.text).toBeLessThan(500)
+      return
+    }
+    const agent = await clientActor(creds, 'agent')
     ok(await agent.api.get(`/api/stores/${s.id}/orders`), 200)
     expectStatus(await m.owner.api.delete(`/api/merchants/${m.id}/members/${u.id}`), 204)
     expectDenied(await agent.api.get(`/api/stores/${s.id}/orders`))

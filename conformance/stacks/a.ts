@@ -144,7 +144,7 @@ const driver: StackDriver = {
     const cfg = await config()
     const basic = Buffer.from(`${encodeURIComponent(clientId)}:${encodeURIComponent(clientSecret)}`).toString('base64')
     // Zitadel is eventually consistent: a secret added a moment ago can read as
-    // "Secret.NotExisting" until its projection catches up, so retry briefly.
+    // "Secret.NotExisting" (or the machine user as "client not found") until its projection catches up, so retry briefly.
     for (let attempt = 0; ; attempt++) {
       const res = await call('/oauth/v2/token', {
         method: 'POST',
@@ -153,7 +153,7 @@ const driver: StackDriver = {
       })
       if (res.status === 400 && attempt < 20) {
         const text = await res.clone().text()
-        if (text.includes('NotExisting') || text.includes('NotFound')) {
+        if (text.includes('NotExisting') || text.includes('NotFound') || text.includes('client not found')) {
           await new Promise((r) => setTimeout(r, 250))
           continue
         }

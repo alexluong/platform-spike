@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"math"
 	"net/http"
 
 	"github.com/alexluong/platform-spike/go/internal/authz"
@@ -19,6 +20,16 @@ import (
 type Module struct{}
 
 var errInvalidTransition = core.Conflict("invalid_transition")
+
+const maxQty = 1_000_000
+
+// mulAdd returns total + price*qty, or false if it overflows int64 (all inputs >= 0).
+func mulAdd(total, price, qty int64) (int64, bool) {
+	if price != 0 && qty > (math.MaxInt64-total)/price {
+		return 0, false
+	}
+	return total + price*qty, true
+}
 
 func storeTarget(ctx context.Context, r *core.Req) (core.Target, error) {
 	return scope.Store(ctx, r.Tx, r.Path("sid"))
@@ -80,8 +91,8 @@ func (m *Module) place(ctx context.Context, r *core.Req) (any, error) {
 	}
 	o := scope.Order{ID: db.NewID("o"), StoreID: r.Target.Resource.ID, CustomerID: r.P.ID, Status: "pending", Items: []scope.Item{}}
 	for _, it := range in.Items {
-		if it.Qty <= 0 {
-			return nil, core.BadInput("qty must be > 0")
+		if it.Qty <= 0 || it.Qty > maxQty {
+			return nil, core.BadInput("qty must be 1..1000000")
 		}
 		var price int64
 		err := r.Tx.QueryRow(ctx, `SELECT price_cents FROM products WHERE id=$1 AND store_id=$2`, it.ProductID, o.StoreID).Scan(&price)
@@ -90,8 +101,12 @@ func (m *Module) place(ctx context.Context, r *core.Req) (any, error) {
 		} else if err != nil {
 			return nil, err
 		}
+		line, ok := mulAdd(o.TotalCents, price, it.Qty)
+		if !ok {
+			return nil, core.BadInput("order total too large")
+		}
 		o.Items = append(o.Items, scope.Item{ProductID: it.ProductID, Qty: it.Qty, UnitPriceCents: price})
-		o.TotalCents += price * it.Qty
+		o.TotalCents = line
 	}
 	items, _ := json.Marshal(o.Items)
 	_, err := r.Tx.Exec(ctx, `INSERT INTO orders(id, merchant_id, store_id, customer_id, items, total_cents, status) VALUES ($1,$2,$3,$4,$5,$6,'pending')`,

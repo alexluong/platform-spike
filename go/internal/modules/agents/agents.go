@@ -18,6 +18,8 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
+const maxGrantSeconds = 365 * 24 * 3600
+
 type Module struct {
 	IdP identity.Provisioner
 }
@@ -82,18 +84,29 @@ func (m *Module) grant(ctx context.Context, r *core.Req) (any, error) {
 	if in.ExpiresInSeconds <= 0 || len(in.Permissions) == 0 {
 		return nil, core.BadInput("permissions and expiresInSeconds > 0 are required")
 	}
+	if in.ExpiresInSeconds > maxGrantSeconds { // also keeps the Duration below from overflowing
+		return nil, core.BadInput("expiresInSeconds must be at most one year")
+	}
 	perms := core.Dedupe(in.Permissions)
 	for _, p := range perms {
 		if !perm.IsGrantable(p) {
 			return nil, core.E(http.StatusBadRequest, "not_grantable", p)
 		}
 	}
-	var agentMerchant string
-	err := r.Tx.QueryRow(ctx, `SELECT merchant_id FROM agents WHERE id=$1`, in.AgentID).Scan(&agentMerchant)
+	var agentMerchant, registrant string
+	err := r.Tx.QueryRow(ctx, `SELECT merchant_id, owner_user_id FROM agents WHERE id=$1`, in.AgentID).Scan(&agentMerchant, &registrant)
 	if errors.Is(err, pgx.ErrNoRows) || (err == nil && agentMerchant != r.Target.MerchantID) {
 		return nil, core.ErrNotFound
 	} else if err != nil {
 		return nil, err
+	}
+	// Only the user who registered the agent (and so holds its secret) may grant it.
+	// A grant lends the grantor's rights to whoever holds the credential: letting user A
+	// lend rights to user B's agent would keep working after B leaves the merchant. It also
+	// keeps every live grant of an agent from one user, which the engine models rely on
+	// (results/a.md: set algebra can't tie a grant to its grantor).
+	if registrant != r.P.ID {
+		return nil, core.E(http.StatusForbidden, "forbidden", "only the agent's registrant can grant it")
 	}
 	// The grantor must hold every permission at this store (refund: holds it at all; the
 	// agent later uses the grantor's own limit).
@@ -101,15 +114,6 @@ func (m *Module) grant(ctx context.Context, r *core.Req) (any, error) {
 		return nil, err
 	} else if !ok {
 		return nil, core.ErrEscalation
-	}
-	// Engine model limit (see results/a.md): all live grants of one agent come from one user.
-	var other bool
-	if err := r.Tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM agent_grants WHERE agent_id=$1 AND grantor_user_id<>$2 AND revoked_at IS NULL AND expires_at > $3)`,
-		in.AgentID, r.P.ID, r.Now).Scan(&other); err != nil {
-		return nil, err
-	}
-	if other {
-		return nil, core.Conflict("agent_grantor_conflict")
 	}
 	id := db.NewID("gr")
 	exp := r.Now.Add(time.Duration(in.ExpiresInSeconds) * time.Second).UTC()
