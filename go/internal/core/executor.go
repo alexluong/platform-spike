@@ -161,7 +161,7 @@ func (e *Executor) precheck(ctx context.Context, q Querier, p *Principal, action
 	if !a.AllowsKind(p.Kind) {
 		return &authz.Decision{Reason: ReasonKind}, nil
 	}
-	if !a.AllowsScope(perm.ScopeType(t.Resource.Type)) {
+	if !a.CheckableAt(perm.ScopeType(t.Resource.Type)) {
 		return &authz.Decision{Reason: ReasonScope}, nil
 	}
 	if t.MerchantID != "" && (p.Kind == perm.KindUser || p.Kind == perm.KindAgent) && p.MerchantID != t.MerchantID {

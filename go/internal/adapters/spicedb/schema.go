@@ -127,9 +127,6 @@ func Schema() string {
 	w("\trelation grant: agent_grant")
 	w("\trelation install: app_install")
 	for _, a := range grantable {
-		if !a.AllowsScope(perm.ScopeStore) {
-			continue
-		}
 		p := Perm(a.ID)
 		w("\tpermission %s_held = binding->%s + merchant->%s_held", p, p, p)
 		expr := fmt.Sprintf("(%s_held & (any_user + grant->%s))", p, p)

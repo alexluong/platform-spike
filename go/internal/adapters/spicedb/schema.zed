@@ -186,8 +186,16 @@ definition store {
 	relation any_user: user:*
 	relation grant: agent_grant
 	relation install: app_install
+	permission merchant_view_held = binding->merchant_view + merchant->merchant_view_held
+	permission merchant_view = (((merchant_view_held & (any_user + grant->merchant_view)) + install->merchant_view) - merchant->suspended) + merchant->break_glass_viewer
+	permission merchant_update_held = binding->merchant_update + merchant->merchant_update_held
+	permission merchant_update = ((merchant_update_held & (any_user + grant->merchant_update)) + install->merchant_update) - merchant->suspended
+	permission member_manage_held = binding->member_manage + merchant->member_manage_held
+	permission member_manage = (member_manage_held & (any_user + grant->member_manage)) - merchant->suspended
 	permission role_manage_held = binding->role_manage + merchant->role_manage_held
 	permission role_manage = (role_manage_held & (any_user + grant->role_manage)) - merchant->suspended
+	permission store_create_held = binding->store_create + merchant->store_create_held
+	permission store_create = ((store_create_held & (any_user + grant->store_create)) + install->store_create) - merchant->suspended
 	permission store_view_held = binding->store_view + merchant->store_view_held
 	permission store_view = (((store_view_held & (any_user + grant->store_view)) + install->store_view) - merchant->suspended) + merchant->break_glass_viewer
 	permission product_create_held = binding->product_create + merchant->product_create_held

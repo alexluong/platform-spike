@@ -49,7 +49,7 @@ func g(id string, scopes []ScopeType, view bool) Action {
 
 var (
 	merchantScope = []ScopeType{ScopeMerchant}
-	storeScope    = []ScopeType{ScopeStore, ScopeMerchant} // store actions may be asked at merchant scope too ("held merchant-wide")
+	storeScope    = []ScopeType{ScopeStore}
 	eitherScope   = []ScopeType{ScopeMerchant, ScopeStore}
 	platformScope = []ScopeType{ScopePlatform}
 	staffOnly     = []Kind{KindPlatform}
@@ -134,8 +134,18 @@ func (a Action) AllowsKind(k Kind) bool {
 	return true
 }
 
-// AllowsScope reports whether the action can be checked against this resource type.
+// AllowsScope reports whether the catalog scope of the action is s (what /api/me/permissions reports).
 func (a Action) AllowsScope(s ScopeType) bool { return slices.Contains(a.Scopes, s) }
+
+// CheckableAt reports whether can() may ask about the action at s. Grantable
+// actions can be "held" at a merchant or a store whatever their catalog scope
+// (the guardrails ask "does the caller hold every permission of this role here").
+func (a Action) CheckableAt(s ScopeType) bool {
+	if a.Grantable {
+		return s == ScopeMerchant || s == ScopeStore
+	}
+	return a.AllowsScope(s)
+}
 
 // SystemRole is a role defined in code, present in every merchant.
 type SystemRole struct {

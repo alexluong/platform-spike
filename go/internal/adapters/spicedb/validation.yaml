@@ -35,15 +35,15 @@ relationships: |-
   agent_grant:g1#agent@agent:bot[expiration:2099-01-01T00:00:00Z]
   agent_grant:g1#order_view@agent:bot[expiration:2099-01-01T00:00:00Z]
   agent_grant:g1#order_refund@agent:bot[expiration:2099-01-01T00:00:00Z]
-  user:carol#delegate@agent_grant:g1#agent[expiration:2099-01-01T00:00:00Z]
+  user:carol#delegate@agent_grant:g1#agent
   store:s1#grant@agent_grant:g1
   agent_grant:g2#agent@agent:old[expiration:2020-01-01T00:00:00Z]
   agent_grant:g2#order_view@agent:old[expiration:2020-01-01T00:00:00Z]
-  user:carol#delegate@agent_grant:g2#agent[expiration:2020-01-01T00:00:00Z]
+  user:carol#delegate@agent_grant:g2#agent
   store:s1#grant@agent_grant:g2
   agent_grant:g3#agent@agent:orphan[expiration:2099-01-01T00:00:00Z]
   agent_grant:g3#order_view@agent:orphan[expiration:2099-01-01T00:00:00Z]
-  user:dave#delegate@agent_grant:g3#agent[expiration:2099-01-01T00:00:00Z]
+  user:dave#delegate@agent_grant:g3#agent
   store:s1#grant@agent_grant:g3
   app_install:i1#order_view@app:shopapp
   store:s1#install@app_install:i1

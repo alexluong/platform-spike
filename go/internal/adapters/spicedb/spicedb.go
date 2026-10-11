@@ -288,7 +288,7 @@ func (c *Client) Apply(ctx context.Context, ev authz.Event) error {
 		g := obj("agent_grant", ev.GrantID)
 		rs := []*v1.Relationship{
 			expiring(rel(g, "agent", subj("agent", ev.AgentID, "")), ev.ExpiresAt),
-			expiring(rel(obj("user", ev.UserID), "delegate", subj("agent_grant", ev.GrantID, "agent")), ev.ExpiresAt),
+			rel(obj("user", ev.UserID), "delegate", subj("agent_grant", ev.GrantID, "agent")), // expiry comes from g#agent
 			rel(obj("store", ev.StoreID), "grant", subj("agent_grant", ev.GrantID, "")),
 		}
 		for _, p := range ev.Permissions {

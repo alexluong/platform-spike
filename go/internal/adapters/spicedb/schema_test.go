@@ -33,7 +33,10 @@ func TestSchemaFileUpToDate(t *testing.T) {
 func TestEveryActionHasAPermission(t *testing.T) {
 	s := Schema()
 	for _, a := range perm.Catalog {
-		for _, sc := range a.Scopes {
+		for _, sc := range []perm.ScopeType{perm.ScopePlatform, perm.ScopeMerchant, perm.ScopeStore} {
+			if !a.CheckableAt(sc) {
+				continue
+			}
 			def := s[strings.Index(s, "definition "+string(sc)+" {"):]
 			def = def[:strings.Index(def, "\n}")]
 			if !strings.Contains(def, "permission "+Perm(a.ID)+" =") {

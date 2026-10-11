@@ -1,2 +1,138 @@
-# Stack a: filled in by its builder (spec/SPEC.md §11)
-services: {}
+# Stack a: Go app + Zitadel (OIDC) + SpiceDB, one Postgres. SPEC §11.
+#   DOCKER_HOST=ssh://cs-ws docker compose -p ps-a --profile a up -d --build
+# Published: app 8081, Zitadel 8085 (issuer http://${STACK_A_HOST:-cs-ws}:8085).
+# Zitadel's external domain must be the name clients use; inside the network the
+# Zitadel container carries the same name as an alias, so the issuer URL is identical
+# for the login driver (outside) and the app/bootstrap (inside).
+# Dev-only secrets below are generated placeholders for a local stack.
+
+x-pg-dsn: &pgpass postgres-a-dev-pw
+
+services:
+  a-postgres:
+    profiles: [a]
+    build: ./postgres
+    command: ["postgres", "-c", "track_commit_timestamp=on", "-c", "max_connections=200"]
+    environment:
+      POSTGRES_PASSWORD: *pgpass
+    volumes: [a-pg:/var/lib/postgresql/data]
+    networks: [a-net]
+    mem_limit: 512m
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d app"]
+      interval: 3s
+      timeout: 5s
+      retries: 30
+
+  a-zitadel:
+    profiles: [a]
+    image: ghcr.io/zitadel/zitadel:v4.19.4
+    user: "0"
+    command: start-from-init --masterkey "MasterkeyNeedsToHave32Characters" --tlsMode disabled
+    environment:
+      ZITADEL_PORT: "8085"
+      ZITADEL_EXTERNALDOMAIN: ${STACK_A_HOST:-cs-ws}
+      ZITADEL_EXTERNALPORT: "8085"
+      ZITADEL_EXTERNALSECURE: "false"
+      ZITADEL_TLS_ENABLED: "false"
+      ZITADEL_DATABASE_POSTGRES_DSN: postgresql://postgres:postgres-a-dev-pw@a-postgres:5432/zitadel?sslmode=disable
+      ZITADEL_FIRSTINSTANCE_ORG_HUMAN_PASSWORDCHANGEREQUIRED: "false"
+      # Service account (IAM owner) for the app: creates users and machine clients.
+      ZITADEL_FIRSTINSTANCE_PATPATH: /zitadel/bootstrap/admin.pat
+      ZITADEL_FIRSTINSTANCE_ORG_MACHINE_MACHINE_USERNAME: platform-spike-admin
+      ZITADEL_FIRSTINSTANCE_ORG_MACHINE_MACHINE_NAME: platform-spike-admin
+      ZITADEL_FIRSTINSTANCE_ORG_MACHINE_PAT_EXPIRATIONDATE: "2099-01-01T00:00:00Z"
+      # IAM_LOGIN_CLIENT: the login driver uses it in place of a login UI.
+      ZITADEL_FIRSTINSTANCE_LOGINCLIENTPATPATH: /zitadel/bootstrap/login-client.pat
+      ZITADEL_FIRSTINSTANCE_ORG_LOGINCLIENT_MACHINE_USERNAME: login-client
+      ZITADEL_FIRSTINSTANCE_ORG_LOGINCLIENT_MACHINE_NAME: login-client
+      ZITADEL_FIRSTINSTANCE_ORG_LOGINCLIENT_PAT_EXPIRATIONDATE: "2099-01-01T00:00:00Z"
+      ZITADEL_DEFAULTINSTANCE_FEATURES_LOGINV2_REQUIRED: "true"
+      ZITADEL_DEFAULTINSTANCE_FEATURES_LOGINV2_BASEURI: http://${STACK_A_HOST:-cs-ws}:8085/ui/v2/login/
+      ZITADEL_OIDC_DEFAULTLOGINURLV2: http://${STACK_A_HOST:-cs-ws}:8085/ui/v2/login/login?authRequest=
+    ports: ["8085:8085"]
+    volumes: [a-zitadel-bootstrap:/zitadel/bootstrap]
+    networks:
+      a-net:
+        aliases: ["${STACK_A_HOST:-cs-ws}"]
+    mem_limit: 1g
+    depends_on:
+      a-postgres: {condition: service_healthy}
+    healthcheck:
+      test: ["CMD", "/app/zitadel", "ready"]
+      interval: 5s
+      timeout: 10s
+      retries: 60
+      start_period: 20s
+
+  a-spicedb-migrate:
+    profiles: [a]
+    image: authzed/spicedb:v1.56.2
+    command: ["datastore", "migrate", "head", "--datastore-engine=postgres",
+              "--datastore-conn-uri=postgres://postgres:postgres-a-dev-pw@a-postgres:5432/spicedb?sslmode=disable"]
+    networks: [a-net]
+    depends_on:
+      a-postgres: {condition: service_healthy}
+
+  a-spicedb:
+    profiles: [a]
+    image: authzed/spicedb:v1.56.2
+    command: ["serve", "--grpc-preshared-key=spicedb-a-dev-key", "--datastore-engine=postgres",
+              "--datastore-conn-uri=postgres://postgres:postgres-a-dev-pw@a-postgres:5432/spicedb?sslmode=disable",
+              "--datastore-revision-quantization-interval=100ms", "--http-enabled=false"]
+    networks: [a-net]
+    mem_limit: 512m
+    depends_on:
+      a-spicedb-migrate: {condition: service_completed_successfully}
+
+  a-bootstrap:
+    profiles: [a]
+    build: ../../go
+    image: platform-spike-go:a
+    command: ["bootstrap"]
+    environment: &appenv
+      DATABASE_URL: postgres://postgres:postgres-a-dev-pw@a-postgres:5432/app?sslmode=disable
+      IDP: zitadel
+      AUTHZ: spicedb
+      SPICEDB_ENDPOINT: a-spicedb:50051
+      SPICEDB_KEY: spicedb-a-dev-key
+      ZITADEL_ISSUER: http://${STACK_A_HOST:-cs-ws}:8085
+      ZITADEL_ADMIN_PAT_FILE: /zitadel/bootstrap/admin.pat
+      ZITADEL_LOGIN_PAT_FILE: /zitadel/bootstrap/login-client.pat
+      STACK_CONFIG: /stack/stack.json
+      TEST_MODE: "1"
+      TEST_SECRET: ${TEST_SECRET:-test-secret}
+    volumes:
+      - a-zitadel-bootstrap:/zitadel/bootstrap:ro
+      - a-stack:/stack
+    networks: [a-net]
+    depends_on:
+      a-postgres: {condition: service_healthy}
+      a-zitadel: {condition: service_healthy}
+      a-spicedb: {condition: service_started}
+
+  a-app:
+    profiles: [a]
+    image: platform-spike-go:a
+    command: ["server"]
+    environment: *appenv
+    ports: ["8081:8081"]
+    volumes: [a-stack:/stack:ro]
+    networks: [a-net]
+    mem_limit: 256m
+    restart: unless-stopped
+    depends_on:
+      a-bootstrap: {condition: service_completed_successfully}
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8081/healthz"]
+      interval: 3s
+      timeout: 5s
+      retries: 40
+
+networks:
+  a-net: {}
+
+volumes:
+  a-pg: {}
+  a-zitadel-bootstrap: {}
+  a-stack: {}
