@@ -1,12 +1,14 @@
 package openfga
 
 import (
+	"encoding/json"
 	"flag"
 	"os"
 	"os/exec"
 	"strings"
 	"testing"
 
+	fga "github.com/openfga/go-sdk"
 	"github.com/openfga/language/pkg/go/transformer"
 
 	"github.com/alexluong/platform-spike/go/internal/perm"
@@ -85,5 +87,37 @@ func TestModelRequestKeepsRewrites(t *testing.T) {
 	}
 	if len(req.GetConditions()) != 2 {
 		t.Errorf("conditions: %v", req.GetConditions())
+	}
+}
+
+// Bootstrap skips the write when the stored model equals the generated one,
+// although the server echoes empty fields the request omits.
+func TestSameModelIgnoresEchoedEmptyFields(t *testing.T) {
+	want, err := modelRequest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := json.Marshal(want)
+	var got map[string]any
+	_ = json.Unmarshal(raw, &got)
+	for _, td := range got["type_definitions"].([]any) {
+		m := td.(map[string]any)
+		if m["relations"] == nil {
+			m["relations"] = map[string]any{}
+		}
+		if md, ok := m["metadata"].(map[string]any); ok {
+			md["module"] = ""
+		}
+	}
+	for _, c := range got["conditions"].(map[string]any) {
+		c.(map[string]any)["metadata"] = map[string]any{"module": ""}
+	}
+	raw, _ = json.Marshal(got)
+	var echoed fga.AuthorizationModel
+	if err := json.Unmarshal(raw, &echoed); err != nil {
+		t.Fatal(err)
+	}
+	if !sameModel(want, &echoed) {
+		t.Fatal("echoed model compares different")
 	}
 }

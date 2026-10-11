@@ -172,17 +172,49 @@ func renameKeys(v any, names map[string]string) any {
 	return v
 }
 
-// sameModel compares type definitions and conditions as canonical JSON.
+// sameModel compares type definitions and conditions as canonical JSON. The
+// server echoes empty fields ("module": "", "relations": {}, "generic_types": [])
+// that the DSL-built request omits, so empty values are dropped first.
 func sameModel(want client.ClientWriteAuthorizationModelRequest, got *fga.AuthorizationModel) bool {
 	canon := func(v any) any {
 		b, _ := json.Marshal(v)
 		var out any
 		_ = json.Unmarshal(b, &out)
-		return out
+		return prune(out)
 	}
 	return reflect.DeepEqual(canon(want.TypeDefinitions), canon(got.TypeDefinitions)) &&
 		reflect.DeepEqual(canon(want.Conditions), canon(got.Conditions)) &&
 		want.SchemaVersion == got.SchemaVersion
+}
+
+func prune(v any) any {
+	switch x := v.(type) {
+	case map[string]any:
+		out := map[string]any{}
+		for k, val := range x {
+			if p := prune(val); p != nil {
+				out[k] = p
+			}
+		}
+		if len(out) == 0 {
+			return nil
+		}
+		return out
+	case []any:
+		var out []any
+		for _, val := range x {
+			out = append(out, prune(val))
+		}
+		if len(out) == 0 {
+			return nil
+		}
+		return out
+	case string:
+		if x == "" {
+			return nil
+		}
+	}
+	return v
 }
 
 // Ping checks OpenFGA answers for our store and model.
