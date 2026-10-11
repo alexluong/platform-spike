@@ -4,7 +4,7 @@ import { sql } from 'drizzle-orm'
 import { fileURLToPath } from 'node:url'
 import pg from 'pg'
 import { z } from 'zod'
-import { makeBetterAuth, API_SCOPE } from './adapters/better-auth.js'
+import { makeBetterAuth, migrateBetterAuth, API_SCOPE } from './adapters/better-auth.js'
 import { makeCerbosAuthorizer } from './adapters/cerbos.js'
 import { makeDb, migrateApp } from './db/client.js'
 import { appUsers } from './db/schema.js'
@@ -42,15 +42,16 @@ const config = z
 const pool = new pg.Pool({ connectionString: config.DATABASE_URL, max: 20 })
 const db = makeDb(pool)
 
+// Migrations (idempotent): Better Auth's tables, then ours.
+const identityConfig = { pool, baseUrl: config.AUTH_BASE_URL, secret: config.AUTH_SECRET, apiResource: config.API_RESOURCE }
+await migrateBetterAuth(identityConfig)
+await migrateApp(db, fileURLToPath(new URL('../drizzle', import.meta.url)))
+
 // Adapters
-const identity = makeBetterAuth({ pool, baseUrl: config.AUTH_BASE_URL, secret: config.AUTH_SECRET, apiResource: config.API_RESOURCE })
+const identity = makeBetterAuth(identityConfig)
 const pip = makeAccessResolver(db)
 const authz = makeCerbosAuthorizer({ address: config.CERBOS_ADDRESS, pip })
 const resolvePrincipal = makePrincipalResolver(db, API_SCOPE)
-
-// Migrations (idempotent): Better Auth's tables, then ours.
-await identity.migrate()
-await migrateApp(db, fileURLToPath(new URL('../drizzle', import.meta.url)))
 
 // Modules → registry → executor
 const registry = buildRegistry(

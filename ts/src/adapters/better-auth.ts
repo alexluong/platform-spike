@@ -1,7 +1,7 @@
 // Identity: Better Auth, in the app. Users sign in with email/password and use the session token
 // as a bearer (bearer plugin). Apps and agents are OAuth clients of Better Auth's OAuth provider
 // and get JWT access tokens via client_credentials; we verify those against the JWKS.
-import { betterAuth } from 'better-auth'
+import { betterAuth, type BetterAuthOptions } from 'better-auth'
 import { getMigrations } from 'better-auth/db/migration'
 import { verifyJwsAccessToken } from 'better-auth/oauth2'
 import { bearer, jwt } from 'better-auth/plugins'
@@ -21,8 +21,8 @@ export interface IdentityConfig {
 
 export const API_SCOPE = 'api'
 
-export function makeBetterAuth(cfg: IdentityConfig) {
-  const auth = betterAuth({
+function authOptions(cfg: IdentityConfig) {
+  return {
     baseURL: cfg.baseUrl,
     basePath: '/api/auth',
     secret: cfg.secret,
@@ -43,7 +43,18 @@ export function makeBetterAuth(cfg: IdentityConfig) {
         clientRegistrationDefaultResources: [cfg.apiResource],
       }),
     ],
-  })
+  } satisfies BetterAuthOptions
+}
+
+/** Create/upgrade Better Auth's tables. Runs before the instance exists: the OAuth provider seeds
+ *  its resource row at init, which needs the tables. */
+export async function migrateBetterAuth(cfg: IdentityConfig) {
+  const { runMigrations } = await getMigrations(authOptions(cfg))
+  await runMigrations()
+}
+
+export function makeBetterAuth(cfg: IdentityConfig) {
+  const auth = betterAuth(authOptions(cfg))
 
   const issuer = `${cfg.baseUrl}/api/auth`
   const jwksCacheKey = {}
@@ -54,11 +65,6 @@ export function makeBetterAuth(cfg: IdentityConfig) {
 
   return {
     auth,
-
-    async migrate() {
-      const { runMigrations } = await getMigrations(auth.options)
-      await runMigrations()
-    },
 
     /** Validate `Authorization: Bearer …`. Session tokens are checked against Better Auth's
      *  session table; JWT client tokens against the JWKS (iss, aud, exp, scope). */
