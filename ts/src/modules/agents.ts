@@ -50,6 +50,9 @@ export function agentActions(deps: { clients: ClientRegistry }) {
         .from(agents)
         .where(and(eq(agents.id, i.agentId), eq(agents.merchantId, s.merchantId)))
       if (!a) throw notFound('agent')
+      // Only the registrant grants their agent: otherwise an ex-member's agent keeps working under a
+      // teammate's grant (review-a finding 1; same rule as stack a/b).
+      if (a.createdBy !== principal.id) throw forbidden('forbidden', "only the agent's registrant can grant it")
       const bad = i.permissions.filter((p) => !isGrantable(p))
       if (bad.length) throw invalid('not_grantable', `not grantable: ${bad.join(', ')}`)
       const permissions = [...new Set(i.permissions)]
