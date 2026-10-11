@@ -3,7 +3,7 @@ import { DriverNotImplementedError, type StackDriver } from '../src/driver'
 import { env } from '../src/env'
 
 /** App (SPEC table: port 8081). */
-const baseUrl = process.env.BASE_URL ?? `http://${env.host}:8081`
+const baseUrl = process.env.APP_URL ?? `http://${env.host}:8081`
 /** Zitadel, published by the stack's compose file. TODO(stack a): set the real published port. */
 export const zitadelUrl = process.env.ZITADEL_URL ?? `http://${env.host}:8080`
 

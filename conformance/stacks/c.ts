@@ -3,7 +3,7 @@ import { DriverNotImplementedError, type StackDriver } from '../src/driver'
 import { env } from '../src/env'
 
 /** App, which also hosts Better Auth (SPEC table: port 8083). */
-const baseUrl = process.env.BASE_URL ?? `http://${env.host}:8083`
+const baseUrl = process.env.APP_URL ?? `http://${env.host}:8083`
 
 const driver: StackDriver = {
   baseUrl,

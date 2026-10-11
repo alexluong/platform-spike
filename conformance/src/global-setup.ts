@@ -7,6 +7,7 @@ import { getDriver } from './stack'
 
 export default async function setup(): Promise<void> {
   const stack = env.stack // throws a clear error when STACK is missing
+  if (process.env.SKIP_PREFLIGHT === '1') return
   const driver = getDriver()
   const problems: string[] = []
 

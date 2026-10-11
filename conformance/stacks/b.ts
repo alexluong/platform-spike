@@ -3,7 +3,7 @@ import { DriverNotImplementedError, type StackDriver } from '../src/driver'
 import { env } from '../src/env'
 
 /** App (SPEC table: port 8082). */
-const baseUrl = process.env.BASE_URL ?? `http://${env.host}:8082`
+const baseUrl = process.env.APP_URL ?? `http://${env.host}:8082`
 /** TODO(stack b): set the real published ports for Kratos public, Hydra public and Hydra admin. */
 export const kratosPublicUrl = process.env.KRATOS_PUBLIC_URL ?? `http://${env.host}:4433`
 export const hydraPublicUrl = process.env.HYDRA_PUBLIC_URL ?? `http://${env.host}:4444`
