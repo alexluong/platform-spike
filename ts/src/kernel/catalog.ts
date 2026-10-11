@@ -58,6 +58,9 @@ export const STORE_ACTIONS: readonly Permission[] = [
   'agent.grant',
 ]
 
+/** Actions whose check runs against a merchant. */
+export const MERCHANT_ACTIONS: readonly Permission[] = ['merchant.view', 'merchant.update', 'member.manage', 'role.manage', 'store.create']
+
 /** Apps never get these, even if requested (SPEC §5). */
 export const NEVER_FOR_APPS: readonly Permission[] = ['role.manage', 'member.manage', 'agent.grant', 'app.install', 'app.uninstall']
 

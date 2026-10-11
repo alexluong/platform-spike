@@ -50,7 +50,18 @@ export function merchantActions() {
     id: 'member.remove',
     mutating: true,
     input: mid.extend({ userId: z.string().min(1) }),
-    authorize: async ({ db, principal }, i) => ({ action: 'member.manage', resource: await merchantCheck(db, principal, i.merchantId) }),
+    authorize: async ({ db, principal }, i) => {
+      const at = await merchantCheck(db, principal, i.merchantId)
+      const checks = [{ action: 'member.manage', resource: at }]
+      // Removing a member removes their roles: taking away `owner` is owner-only.
+      const [own] = await db
+        .select({ id: roleAssignments.id })
+        .from(roleAssignments)
+        .where(and(eq(roleAssignments.userId, i.userId), eq(roleAssignments.merchantId, i.merchantId), eq(roleAssignments.roleId, 'owner')))
+        .limit(1)
+      if (own) checks.push({ action: 'role.manage_owner', resource: at })
+      return checks
+    },
     async run({ tx, emit }, i) {
       const [m] = await tx
         .select()

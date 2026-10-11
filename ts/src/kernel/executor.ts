@@ -47,11 +47,14 @@ export function makeExecutor(deps: { db: Db; authz: Authorizer; registry: Regist
       const checks = await def.authorize({ principal, db }, input)
       const list: Check[] = checks == null ? [] : Array.isArray(checks) ? checks : [checks]
       const can = bindCan(authz, principal)
-      const breakGlassUses: string[] = []
+      const breakGlassUses = new Map<string, { action: string; merchantId: string }>()
       for (const c of list) {
         const d = await can(c.action, c.resource, c.context)
         if (!d.decision) throw denyError(d)
-        if (d.context?.breakGlass) breakGlassUses.push(String(d.context.merchantId ?? ''))
+        if (d.context?.breakGlass) {
+          const use = { action: c.action, merchantId: String(d.context.merchantId ?? '') }
+          breakGlassUses.set(JSON.stringify(use), use)
+        }
       }
 
       // 4. run + outbox (+ break-glass audit) in one transaction
@@ -61,8 +64,8 @@ export function makeExecutor(deps: { db: Db; authz: Authorizer; registry: Regist
         if (def.mutating) {
           await tx.insert(outbox).values({ action: def.id, actor: principal.id, payload: { input: input as object, events } })
         }
-        for (const merchantId of new Set(breakGlassUses)) {
-          await tx.insert(audit).values({ actor: principal.id, action: def.id, merchantId })
+        for (const use of breakGlassUses.values()) {
+          await tx.insert(audit).values({ actor: principal.id, action: use.action, merchantId: use.merchantId })
         }
         return result
       })

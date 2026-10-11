@@ -1,7 +1,7 @@
 // /api/me and /api/me/permissions (batch can = AuthZEN action search over the catalog).
 import { z } from 'zod'
 import { defineAction } from '../kernel/action.js'
-import { GRANTABLE, STORE_ACTIONS } from '../kernel/catalog.js'
+import { MERCHANT_ACTIONS, STORE_ACTIONS } from '../kernel/catalog.js'
 import { invalid } from '../kernel/errors.js'
 import { findStore, storeResource } from './lookup.js'
 import { merchantCheck } from './merchants.js'
@@ -30,7 +30,7 @@ export function meActions() {
         actions = STORE_ACTIONS
       } else if (i.merchantId) {
         resource = await merchantCheck(tx, principal, i.merchantId)
-        actions = [...GRANTABLE, 'platform.break_glass']
+        actions = MERCHANT_ACTIONS
       } else throw invalid('invalid_input', 'storeId or merchantId required')
       const ds = await can.many([...actions], resource)
       return { actions: actions.filter((_, n) => ds[n]!.decision) }
