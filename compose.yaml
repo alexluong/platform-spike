@@ -1,0 +1,6 @@
+# One file per stack; each defines services under its own profile (a, b, c).
+#   DOCKER_HOST=ssh://cs-ws docker compose --profile a up -d --build
+include:
+  - stacks/a/compose.yaml
+  - stacks/b/compose.yaml
+  - stacks/c/compose.yaml
