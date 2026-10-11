@@ -9,12 +9,22 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// fakeQ answers the merchant status query.
-type fakeQ struct{ status string }
+// fakeQ answers the merchant status query and the app install query.
+type fakeQ struct {
+	status    string
+	installed bool
+}
 
-type row struct{ s string }
+type row struct {
+	s string
+	b bool
+}
 
 func (r row) Scan(dest ...any) error {
+	if b, ok := dest[0].(*bool); ok {
+		*b = r.b
+		return nil
+	}
 	if r.s == "" {
 		return pgx.ErrNoRows
 	}
@@ -22,7 +32,9 @@ func (r row) Scan(dest ...any) error {
 	return nil
 }
 
-func (q fakeQ) QueryRow(ctx context.Context, sql string, args ...any) pgx.Row { return row{q.status} }
+func (q fakeQ) QueryRow(ctx context.Context, sql string, args ...any) pgx.Row {
+	return row{q.status, q.installed}
+}
 
 // fakeAuthz allows what is listed and records what reached the engine.
 type fakeAuthz struct {
@@ -66,6 +78,8 @@ func TestCanPrechecks(t *testing.T) {
 		{"suspended merchant", user, "order.view", s1, "suspended", false, ReasonSuspended, false},
 		{"apps never manage roles", app, "role.manage", s1, "active", false, ReasonKind, false},
 		{"apps may view orders", app, "order.view", s1, "active", true, "", true},
+		{"app not installed stops before engine", app, "order.view", other, "active", false, ReasonNotInstalled, false},
+		{"apps never act at merchant scope", app, "merchant.view", MerchantTarget("m1"), "active", false, ReasonNotInstalled, false},
 		{"customers are not in the engine", cust, "order.view", s1, "active", false, ReasonKind, false},
 		{"staff never write merchant data", staff, "order.cancel", s1, "active", false, ReasonKind, false},
 		{"staff reads go to the engine (break-glass)", staff, "order.view", s1, "suspended", true, "", true},
@@ -77,7 +91,8 @@ func TestCanPrechecks(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			fa := &fakeAuthz{allow: map[string]bool{"order.view": true}}
 			e := &Executor{Authz: fa}
-			d, err := e.Can(context.Background(), fakeQ{c.status}, c.p, c.action, c.t, nil)
+			// the fake app is installed on s1 only
+			d, err := e.Can(context.Background(), fakeQ{c.status, c.t.Resource.ID == "s1"}, c.p, c.action, c.t, nil)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -109,7 +124,7 @@ func TestHoldsAllRefundContext(t *testing.T) {
 	e := &Executor{Authz: fa}
 	r := &Req{P: &Principal{ID: "u1", Kind: perm.KindUser, MerchantID: "m1"}, exec: e, Tx: nil}
 	// Req.CanMany uses r.Tx as the querier; give it one through a tiny wrapper.
-	ok, err := e.CanMany(context.Background(), fakeQ{"active"}, r.P, []Check{
+	ok, err := e.CanMany(context.Background(), fakeQ{status: "active"}, r.P, []Check{
 		{Action: "order.view", Target: StoreTarget("s1", "m1", nil), Context: RefundContext("order.view", 500)},
 		{Action: "order.refund", Target: StoreTarget("s1", "m1", nil), Context: RefundContext("order.refund", 500)},
 	})

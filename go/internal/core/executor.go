@@ -156,6 +156,7 @@ const (
 	ReasonScope         = "scope"
 	ReasonTenant        = "tenant"
 	ReasonSuspended     = "merchant_suspended"
+	ReasonNotInstalled  = "app_not_installed"
 )
 
 // precheck: token/scope check, tenant isolation, suspension. Returns a deny decision or nil.
@@ -172,6 +173,20 @@ func (e *Executor) precheck(ctx context.Context, q Querier, p *Principal, action
 	}
 	if t.MerchantID != "" && (p.Kind == perm.KindUser || p.Kind == perm.KindAgent) && p.MerchantID != t.MerchantID {
 		return &authz.Decision{Reason: ReasonTenant}, nil
+	}
+	// Apps have no merchant: their tenant boundary is the install. Check it in SQL too, so a
+	// wrong relationship in the engine alone can't open another store (SPEC §1.6 "twice").
+	if t.MerchantID != "" && p.Kind == perm.KindApp {
+		if t.Resource.Type != string(perm.ScopeStore) {
+			return &authz.Decision{Reason: ReasonNotInstalled}, nil // apps act on stores only
+		}
+		var installed bool
+		if err := q.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM app_installs WHERE app_id=$1 AND store_id=$2)`, p.ID, t.Resource.ID).Scan(&installed); err != nil {
+			return nil, err
+		}
+		if !installed {
+			return &authz.Decision{Reason: ReasonNotInstalled}, nil
+		}
 	}
 	if t.MerchantID != "" && p.Kind != perm.KindPlatform {
 		var status string
