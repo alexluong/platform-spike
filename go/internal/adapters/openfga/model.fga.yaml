@@ -1,0 +1,358 @@
+# fga model test --tests model.fga.yaml — model assertions for stack b (run by model_test.go and the stack b Docker build).
+# Mirrors spicedb/validation.yaml. current_time is fixed; the 2020 grants are expired, the 2099 ones live.
+name: platform-spike
+model_file: ./model.fga
+tuples:
+  - user: staff:pa
+    relation: admin
+    object: platform:main
+  - user: staff:sup
+    relation: support
+    object: platform:main
+  - user: platform:main
+    relation: platform
+    object: merchant:m1
+  - user: user:*
+    relation: any_user
+    object: merchant:m1
+  - user: merchant:m1
+    relation: merchant
+    object: store:s1
+  - user: user:*
+    relation: any_user
+    object: store:s1
+  - user: merchant:m1
+    relation: merchant
+    object: store:s2
+  - user: user:*
+    relation: any_user
+    object: store:s2
+  - user: user:*
+    relation: order_view
+    object: role:mgr
+  - user: agent:*
+    relation: order_view
+    object: role:mgr
+  - user: user:*
+    relation: order_refund
+    object: role:mgr
+  - user: agent:*
+    relation: order_refund
+    object: role:mgr
+  - user: user:*
+    relation: role_manage
+    object: role:mgr
+  - user: agent:*
+    relation: role_manage
+    object: role:mgr
+  - user: user:*
+    relation: order_view
+    object: role:clerk
+  - user: agent:*
+    relation: order_view
+    object: role:clerk
+  - user: user:*
+    relation: order_refund
+    object: role:clerk
+    condition: {"name": "refund_limit", "context": {"limit": 1000}}
+  - user: agent:*
+    relation: order_refund
+    object: role:clerk
+    condition: {"name": "refund_limit", "context": {"limit": 1000}}
+  - user: user:*
+    relation: role_manage_owner
+    object: role:owner
+  - user: user:alice
+    relation: subject
+    object: role_binding:b1
+  - user: user:alice#delegate
+    relation: subject
+    object: role_binding:b1
+  - user: role:mgr
+    relation: role
+    object: role_binding:b1
+  - user: role_binding:b1
+    relation: binding
+    object: merchant:m1
+  - user: user:olga
+    relation: subject
+    object: role_binding:b0
+  - user: user:olga#delegate
+    relation: subject
+    object: role_binding:b0
+  - user: role:owner
+    relation: role
+    object: role_binding:b0
+  - user: role_binding:b0
+    relation: binding
+    object: merchant:m1
+  - user: user:carol
+    relation: subject
+    object: role_binding:b2
+  - user: user:carol#delegate
+    relation: subject
+    object: role_binding:b2
+  - user: role:clerk
+    relation: role
+    object: role_binding:b2
+  - user: role_binding:b2
+    relation: binding
+    object: store:s1
+  - user: agent:bot
+    relation: agent
+    object: agent_grant:g1
+    condition: {"name": "not_expired", "context": {"expires_at": "2099-01-01T00:00:00Z"}}
+  - user: agent:bot
+    relation: order_view
+    object: agent_grant:g1
+    condition: {"name": "not_expired", "context": {"expires_at": "2099-01-01T00:00:00Z"}}
+  - user: agent:bot
+    relation: order_refund
+    object: agent_grant:g1
+    condition: {"name": "not_expired", "context": {"expires_at": "2099-01-01T00:00:00Z"}}
+  - user: agent_grant:g1#agent
+    relation: delegate
+    object: user:carol
+  - user: agent_grant:g1
+    relation: grant
+    object: store:s1
+  - user: agent:old
+    relation: agent
+    object: agent_grant:g2
+    condition: {"name": "not_expired", "context": {"expires_at": "2020-01-01T00:00:00Z"}}
+  - user: agent:old
+    relation: order_view
+    object: agent_grant:g2
+    condition: {"name": "not_expired", "context": {"expires_at": "2020-01-01T00:00:00Z"}}
+  - user: agent_grant:g2#agent
+    relation: delegate
+    object: user:carol
+  - user: agent_grant:g2
+    relation: grant
+    object: store:s1
+  - user: agent:orphan
+    relation: agent
+    object: agent_grant:g3
+    condition: {"name": "not_expired", "context": {"expires_at": "2099-01-01T00:00:00Z"}}
+  - user: agent:orphan
+    relation: order_view
+    object: agent_grant:g3
+    condition: {"name": "not_expired", "context": {"expires_at": "2099-01-01T00:00:00Z"}}
+  - user: agent_grant:g3#agent
+    relation: delegate
+    object: user:dave
+  - user: agent_grant:g3
+    relation: grant
+    object: store:s1
+  - user: app:shopapp
+    relation: order_view
+    object: app_install:i1
+  - user: app_install:i1
+    relation: install
+    object: store:s1
+  - user: staff:sup
+    relation: break_glass_viewer
+    object: merchant:m1
+    condition: {"name": "not_expired", "context": {"expires_at": "2099-01-01T00:00:00Z"}}
+  - user: staff:pa
+    relation: break_glass_viewer
+    object: merchant:m1
+    condition: {"name": "not_expired", "context": {"expires_at": "2020-01-01T00:00:00Z"}}
+  - user: platform:main
+    relation: platform
+    object: merchant:m2
+  - user: user:*
+    relation: any_user
+    object: merchant:m2
+  - user: user:*
+    relation: suspended
+    object: merchant:m2
+  - user: agent:*
+    relation: suspended
+    object: merchant:m2
+  - user: app:*
+    relation: suspended
+    object: merchant:m2
+  - user: merchant:m2
+    relation: merchant
+    object: store:t1
+  - user: user:*
+    relation: any_user
+    object: store:t1
+  - user: user:erin
+    relation: subject
+    object: role_binding:b3
+  - user: role:mgr
+    relation: role
+    object: role_binding:b3
+  - user: role_binding:b3
+    relation: binding
+    object: merchant:m2
+tests:
+  - name: style-B custom roles, refund limit, agent grants, apps, suspension, break-glass
+    check:
+      - user: user:alice
+        object: store:s1
+        context: {"current_time": "2026-10-11T00:00:00Z"}
+        assertions:
+          order_view: true
+      - user: user:alice
+        object: store:s2
+        context: {"current_time": "2026-10-11T00:00:00Z"}
+        assertions:
+          order_view: true
+      - user: user:alice
+        object: store:s1
+        context: {"current_time": "2026-10-11T00:00:00Z", "amount": 9007199254740992}
+        assertions:
+          order_refund: true
+      - user: user:alice
+        object: merchant:m1
+        context: {"current_time": "2026-10-11T00:00:00Z"}
+        assertions:
+          role_manage: true
+      - user: user:alice
+        object: store:s1
+        context: {"current_time": "2026-10-11T00:00:00Z"}
+        assertions:
+          role_manage: true
+      - user: user:olga
+        object: merchant:m1
+        context: {"current_time": "2026-10-11T00:00:00Z"}
+        assertions:
+          role_manage_owner: true
+      - user: user:carol
+        object: store:s1
+        context: {"current_time": "2026-10-11T00:00:00Z"}
+        assertions:
+          order_view: true
+      - user: user:carol
+        object: store:s1
+        context: {"current_time": "2026-10-11T00:00:00Z", "amount": 1000}
+        assertions:
+          order_refund: true
+      - user: agent:bot
+        object: store:s1
+        context: {"current_time": "2026-10-11T00:00:00Z"}
+        assertions:
+          order_view: true
+      - user: agent:bot
+        object: store:s1
+        context: {"current_time": "2026-10-11T00:00:00Z", "amount": 500}
+        assertions:
+          order_refund: true
+      - user: app:shopapp
+        object: store:s1
+        context: {"current_time": "2026-10-11T00:00:00Z"}
+        assertions:
+          order_view: true
+      - user: staff:sup
+        object: store:s1
+        context: {"current_time": "2026-10-11T00:00:00Z"}
+        assertions:
+          order_view: true
+      - user: staff:sup
+        object: merchant:m1
+        context: {"current_time": "2026-10-11T00:00:00Z"}
+        assertions:
+          order_view: true
+      - user: staff:pa
+        object: platform:main
+        context: {"current_time": "2026-10-11T00:00:00Z"}
+        assertions:
+          platform_merchant_create: true
+      - user: staff:sup
+        object: platform:main
+        context: {"current_time": "2026-10-11T00:00:00Z"}
+        assertions:
+          platform_merchant_view: true
+      - user: staff:sup
+        object: merchant:m1
+        context: {"current_time": "2026-10-11T00:00:00Z"}
+        assertions:
+          platform_break_glass: true
+      - user: user:alice
+        object: merchant:m1
+        context: {"current_time": "2026-10-11T00:00:00Z"}
+        assertions:
+          role_manage_owner: false
+      - user: user:carol
+        object: store:s2
+        context: {"current_time": "2026-10-11T00:00:00Z"}
+        assertions:
+          order_view: false
+      - user: user:carol
+        object: merchant:m1
+        context: {"current_time": "2026-10-11T00:00:00Z"}
+        assertions:
+          order_view: false
+      - user: user:carol
+        object: store:s1
+        context: {"current_time": "2026-10-11T00:00:00Z", "amount": 1001}
+        assertions:
+          order_refund: false
+      - user: agent:bot
+        object: store:s1
+        context: {"current_time": "2026-10-11T00:00:00Z", "amount": 5000}
+        assertions:
+          order_refund: false
+      - user: agent:bot
+        object: store:s2
+        context: {"current_time": "2026-10-11T00:00:00Z"}
+        assertions:
+          order_view: false
+      - user: agent:bot
+        object: store:s1
+        context: {"current_time": "2026-10-11T00:00:00Z"}
+        assertions:
+          role_manage: false
+      - user: agent:bot
+        object: merchant:m1
+        context: {"current_time": "2026-10-11T00:00:00Z"}
+        assertions:
+          order_view: false
+      - user: agent:old
+        object: store:s1
+        context: {"current_time": "2026-10-11T00:00:00Z"}
+        assertions:
+          order_view: false
+      - user: agent:orphan
+        object: store:s1
+        context: {"current_time": "2026-10-11T00:00:00Z"}
+        assertions:
+          order_view: false
+      - user: app:shopapp
+        object: store:s1
+        context: {"current_time": "2026-10-11T00:00:00Z"}
+        assertions:
+          order_cancel: false
+      - user: app:shopapp
+        object: store:s2
+        context: {"current_time": "2026-10-11T00:00:00Z"}
+        assertions:
+          order_view: false
+      - user: staff:sup
+        object: store:s1
+        context: {"current_time": "2026-10-11T00:00:00Z"}
+        assertions:
+          order_cancel: false
+      - user: staff:pa
+        object: store:s1
+        context: {"current_time": "2026-10-11T00:00:00Z"}
+        assertions:
+          order_view: false
+      - user: user:erin
+        object: store:t1
+        context: {"current_time": "2026-10-11T00:00:00Z"}
+        assertions:
+          order_view: false
+      - user: user:alice
+        object: store:t1
+        context: {"current_time": "2026-10-11T00:00:00Z"}
+        assertions:
+          order_view: false
+      - user: staff:sup
+        object: platform:main
+        context: {"current_time": "2026-10-11T00:00:00Z"}
+        assertions:
+          platform_merchant_create: false

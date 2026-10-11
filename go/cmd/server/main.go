@@ -1,5 +1,5 @@
 // Command server is the composition root: config → adapters → modules, by hand.
-// Stack a: IDP=zitadel AUTHZ=spicedb. Stack b adds other cases to the two switches.
+// Stack a: IDP=zitadel AUTHZ=spicedb. Stack b: IDP=ory AUTHZ=openfga.
 package main
 
 import (
@@ -13,6 +13,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/alexluong/platform-spike/go/internal/adapters/openfga"
+	"github.com/alexluong/platform-spike/go/internal/adapters/ory"
 	"github.com/alexluong/platform-spike/go/internal/adapters/spicedb"
 	"github.com/alexluong/platform-spike/go/internal/adapters/zitadel"
 	"github.com/alexluong/platform-spike/go/internal/authz"
@@ -85,6 +87,12 @@ func run(log *slog.Logger) error {
 			return err
 		}
 		id = zitadel.New(ctx, cfg)
+	case "ory":
+		var cfg ory.Config
+		if err := readJSON(env("STACK_CONFIG", "/bootstrap/stack.json"), &cfg); err != nil {
+			return err
+		}
+		id = ory.New(ctx, cfg)
 	default:
 		return fmt.Errorf("unknown IDP %q", os.Getenv("IDP"))
 	}
@@ -93,6 +101,12 @@ func run(log *slog.Logger) error {
 	switch env("AUTHZ", "spicedb") {
 	case "spicedb":
 		c, err := spicedb.New(env("SPICEDB_ENDPOINT", "spicedb:50051"), env("SPICEDB_KEY", ""))
+		if err != nil {
+			return err
+		}
+		eng = c
+	case "openfga":
+		c, err := openfga.New(ctx, env("OPENFGA_URL", "http://openfga:8080"))
 		if err != nil {
 			return err
 		}

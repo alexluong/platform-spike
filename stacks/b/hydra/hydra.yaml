@@ -1,0 +1,27 @@
+# Hydra for stack b. Dev-only secrets (placeholders for a local stack).
+# urls.self.issuer and dsn come from the environment (compose).
+urls:
+  self:
+    issuer: http://localhost:4444
+  # Never served: the login driver accepts login and consent through the admin API.
+  login: http://localhost:3999/login
+  consent: http://localhost:3999/consent
+  error: http://localhost:3999/error
+
+strategies:
+  # JWT access tokens: the app verifies them against Hydra's JWKS (no introspection call per request).
+  access_token: jwt
+
+oauth2:
+  # Client secrets: pbkdf2 is the default; fewer iterations for dev (the suite registers many clients).
+  hashers:
+    algorithm: pbkdf2
+    pbkdf2:
+      iterations: 1000
+
+secrets:
+  system: [stack-b-dev-hydra-system-secret]
+
+log:
+  level: info
+  format: text

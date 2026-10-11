@@ -1,0 +1,259 @@
+# GENERATED from internal/perm by openfga.Model(); do not edit. Regenerate: go test ./internal/adapters/openfga -run TestModelFileUpToDate -update
+model
+  schema 1.1
+
+# a merchant user; delegate = the agents of the grants this user created
+type user
+  relations
+    define delegate: [agent_grant#agent]
+
+# platform staff (platform_admin, support)
+type staff
+
+type app
+
+type agent
+
+type platform
+  relations
+    define admin: [staff]
+    define support: [staff]
+    define platform_merchant_create: admin
+    define platform_merchant_view: admin or support
+    define platform_merchant_suspend: admin
+    define platform_app_register: admin
+    define platform_audit_view: admin
+    define platform_break_glass: admin or support
+
+# a system or custom role: which grantable permissions it holds
+type role
+  relations
+    define merchant_view: [user:*, agent:*]
+    define merchant_update: [user:*, agent:*]
+    define member_manage: [user:*, agent:*]
+    define role_manage: [user:*, agent:*]
+    define store_create: [user:*, agent:*]
+    define store_view: [user:*, agent:*]
+    define product_create: [user:*, agent:*]
+    define product_update: [user:*, agent:*]
+    define product_view: [user:*, agent:*]
+    define order_view: [user:*, agent:*]
+    define order_cancel: [user:*, agent:*]
+    define order_refund: [user:*, user:* with refund_limit, agent:*, agent:* with refund_limit]
+    define payment_capture: [user:*, agent:*]
+    define payment_view: [user:*, agent:*]
+    define shipment_create: [user:*, agent:*]
+    define shipment_update: [user:*, agent:*]
+    define shipment_view: [user:*, agent:*]
+    define app_install: [user:*, agent:*]
+    define app_uninstall: [user:*, agent:*]
+    define app_view: [user:*, agent:*]
+    define agent_grant: [user:*, agent:*]
+    define role_manage_owner: [user:*]
+
+# one role assignment: subject holds role (at the scope that points to this binding)
+type role_binding
+  relations
+    define subject: [user, user#delegate]
+    define role: [role]
+    define merchant_view: subject and merchant_view from role
+    define merchant_update: subject and merchant_update from role
+    define member_manage: subject and member_manage from role
+    define role_manage: subject and role_manage from role
+    define store_create: subject and store_create from role
+    define store_view: subject and store_view from role
+    define product_create: subject and product_create from role
+    define product_update: subject and product_update from role
+    define product_view: subject and product_view from role
+    define order_view: subject and order_view from role
+    define order_cancel: subject and order_cancel from role
+    define order_refund: subject and order_refund from role
+    define payment_capture: subject and payment_capture from role
+    define payment_view: subject and payment_view from role
+    define shipment_create: subject and shipment_create from role
+    define shipment_update: subject and shipment_update from role
+    define shipment_view: subject and shipment_view from role
+    define app_install: subject and app_install from role
+    define app_uninstall: subject and app_uninstall from role
+    define app_view: subject and app_view from role
+    define agent_grant: subject and agent_grant from role
+    define role_manage_owner: subject and role_manage_owner from role
+
+# an agent grant on a store; every relation is under not_expired
+type agent_grant
+  relations
+    define agent: [agent with not_expired]
+    define merchant_view: [agent with not_expired]
+    define merchant_update: [agent with not_expired]
+    define member_manage: [agent with not_expired]
+    define role_manage: [agent with not_expired]
+    define store_create: [agent with not_expired]
+    define store_view: [agent with not_expired]
+    define product_create: [agent with not_expired]
+    define product_update: [agent with not_expired]
+    define product_view: [agent with not_expired]
+    define order_view: [agent with not_expired]
+    define order_cancel: [agent with not_expired]
+    define order_refund: [agent with not_expired]
+    define payment_capture: [agent with not_expired]
+    define payment_view: [agent with not_expired]
+    define shipment_create: [agent with not_expired]
+    define shipment_update: [agent with not_expired]
+    define shipment_view: [agent with not_expired]
+    define app_install: [agent with not_expired]
+    define app_uninstall: [agent with not_expired]
+    define app_view: [agent with not_expired]
+    define agent_grant: [agent with not_expired]
+
+# an app installed on a store with scopes
+type app_install
+  relations
+    define merchant_view: [app]
+    define merchant_update: [app]
+    define store_create: [app]
+    define store_view: [app]
+    define product_create: [app]
+    define product_update: [app]
+    define product_view: [app]
+    define order_view: [app]
+    define order_cancel: [app]
+    define order_refund: [app]
+    define payment_capture: [app]
+    define payment_view: [app]
+    define shipment_create: [app]
+    define shipment_update: [app]
+    define shipment_view: [app]
+    define app_view: [app]
+
+type merchant
+  relations
+    define platform: [platform]
+    define binding: [role_binding]
+    define any_user: [user:*]
+    define suspended: [user:*, agent:*, app:*]
+    define break_glass_viewer: [staff with not_expired]
+    define platform_break_glass: platform_break_glass from platform
+    define role_manage_owner: (role_manage_owner from binding and any_user) but not suspended
+    define merchant_view_held: merchant_view from binding
+    define merchant_view: ((merchant_view_held and any_user) but not suspended) or break_glass_viewer
+    define merchant_update_held: merchant_update from binding
+    define merchant_update: (merchant_update_held and any_user) but not suspended
+    define member_manage_held: member_manage from binding
+    define member_manage: (member_manage_held and any_user) but not suspended
+    define role_manage_held: role_manage from binding
+    define role_manage: (role_manage_held and any_user) but not suspended
+    define store_create_held: store_create from binding
+    define store_create: (store_create_held and any_user) but not suspended
+    define store_view_held: store_view from binding
+    define store_view: ((store_view_held and any_user) but not suspended) or break_glass_viewer
+    define product_create_held: product_create from binding
+    define product_create: (product_create_held and any_user) but not suspended
+    define product_update_held: product_update from binding
+    define product_update: (product_update_held and any_user) but not suspended
+    define product_view_held: product_view from binding
+    define product_view: ((product_view_held and any_user) but not suspended) or break_glass_viewer
+    define order_view_held: order_view from binding
+    define order_view: ((order_view_held and any_user) but not suspended) or break_glass_viewer
+    define order_cancel_held: order_cancel from binding
+    define order_cancel: (order_cancel_held and any_user) but not suspended
+    define order_refund_held: order_refund from binding
+    define order_refund: (order_refund_held and any_user) but not suspended
+    define payment_capture_held: payment_capture from binding
+    define payment_capture: (payment_capture_held and any_user) but not suspended
+    define payment_view_held: payment_view from binding
+    define payment_view: ((payment_view_held and any_user) but not suspended) or break_glass_viewer
+    define shipment_create_held: shipment_create from binding
+    define shipment_create: (shipment_create_held and any_user) but not suspended
+    define shipment_update_held: shipment_update from binding
+    define shipment_update: (shipment_update_held and any_user) but not suspended
+    define shipment_view_held: shipment_view from binding
+    define shipment_view: ((shipment_view_held and any_user) but not suspended) or break_glass_viewer
+    define app_install_held: app_install from binding
+    define app_install: (app_install_held and any_user) but not suspended
+    define app_uninstall_held: app_uninstall from binding
+    define app_uninstall: (app_uninstall_held and any_user) but not suspended
+    define app_view_held: app_view from binding
+    define app_view: ((app_view_held and any_user) but not suspended) or break_glass_viewer
+    define agent_grant_held: agent_grant from binding
+    define agent_grant: (agent_grant_held and any_user) but not suspended
+
+type store
+  relations
+    define merchant: [merchant]
+    define binding: [role_binding]
+    define any_user: [user:*]
+    define grant: [agent_grant]
+    define install: [app_install]
+    define merchant_suspended: suspended from merchant
+    define merchant_break_glass: break_glass_viewer from merchant
+    define merchant_view_held: merchant_view from binding or merchant_view_held from merchant
+    define merchant_view_granted: merchant_view from grant
+    define merchant_view: (((merchant_view_held and (any_user or merchant_view_granted)) or merchant_view from install) but not merchant_suspended) or merchant_break_glass
+    define merchant_update_held: merchant_update from binding or merchant_update_held from merchant
+    define merchant_update_granted: merchant_update from grant
+    define merchant_update: ((merchant_update_held and (any_user or merchant_update_granted)) or merchant_update from install) but not merchant_suspended
+    define member_manage_held: member_manage from binding or member_manage_held from merchant
+    define member_manage_granted: member_manage from grant
+    define member_manage: (member_manage_held and (any_user or member_manage_granted)) but not merchant_suspended
+    define role_manage_held: role_manage from binding or role_manage_held from merchant
+    define role_manage_granted: role_manage from grant
+    define role_manage: (role_manage_held and (any_user or role_manage_granted)) but not merchant_suspended
+    define store_create_held: store_create from binding or store_create_held from merchant
+    define store_create_granted: store_create from grant
+    define store_create: ((store_create_held and (any_user or store_create_granted)) or store_create from install) but not merchant_suspended
+    define store_view_held: store_view from binding or store_view_held from merchant
+    define store_view_granted: store_view from grant
+    define store_view: (((store_view_held and (any_user or store_view_granted)) or store_view from install) but not merchant_suspended) or merchant_break_glass
+    define product_create_held: product_create from binding or product_create_held from merchant
+    define product_create_granted: product_create from grant
+    define product_create: ((product_create_held and (any_user or product_create_granted)) or product_create from install) but not merchant_suspended
+    define product_update_held: product_update from binding or product_update_held from merchant
+    define product_update_granted: product_update from grant
+    define product_update: ((product_update_held and (any_user or product_update_granted)) or product_update from install) but not merchant_suspended
+    define product_view_held: product_view from binding or product_view_held from merchant
+    define product_view_granted: product_view from grant
+    define product_view: (((product_view_held and (any_user or product_view_granted)) or product_view from install) but not merchant_suspended) or merchant_break_glass
+    define order_view_held: order_view from binding or order_view_held from merchant
+    define order_view_granted: order_view from grant
+    define order_view: (((order_view_held and (any_user or order_view_granted)) or order_view from install) but not merchant_suspended) or merchant_break_glass
+    define order_cancel_held: order_cancel from binding or order_cancel_held from merchant
+    define order_cancel_granted: order_cancel from grant
+    define order_cancel: ((order_cancel_held and (any_user or order_cancel_granted)) or order_cancel from install) but not merchant_suspended
+    define order_refund_held: order_refund from binding or order_refund_held from merchant
+    define order_refund_granted: order_refund from grant
+    define order_refund: ((order_refund_held and (any_user or order_refund_granted)) or order_refund from install) but not merchant_suspended
+    define payment_capture_held: payment_capture from binding or payment_capture_held from merchant
+    define payment_capture_granted: payment_capture from grant
+    define payment_capture: ((payment_capture_held and (any_user or payment_capture_granted)) or payment_capture from install) but not merchant_suspended
+    define payment_view_held: payment_view from binding or payment_view_held from merchant
+    define payment_view_granted: payment_view from grant
+    define payment_view: (((payment_view_held and (any_user or payment_view_granted)) or payment_view from install) but not merchant_suspended) or merchant_break_glass
+    define shipment_create_held: shipment_create from binding or shipment_create_held from merchant
+    define shipment_create_granted: shipment_create from grant
+    define shipment_create: ((shipment_create_held and (any_user or shipment_create_granted)) or shipment_create from install) but not merchant_suspended
+    define shipment_update_held: shipment_update from binding or shipment_update_held from merchant
+    define shipment_update_granted: shipment_update from grant
+    define shipment_update: ((shipment_update_held and (any_user or shipment_update_granted)) or shipment_update from install) but not merchant_suspended
+    define shipment_view_held: shipment_view from binding or shipment_view_held from merchant
+    define shipment_view_granted: shipment_view from grant
+    define shipment_view: (((shipment_view_held and (any_user or shipment_view_granted)) or shipment_view from install) but not merchant_suspended) or merchant_break_glass
+    define app_install_held: app_install from binding or app_install_held from merchant
+    define app_install_granted: app_install from grant
+    define app_install: (app_install_held and (any_user or app_install_granted)) but not merchant_suspended
+    define app_uninstall_held: app_uninstall from binding or app_uninstall_held from merchant
+    define app_uninstall_granted: app_uninstall from grant
+    define app_uninstall: (app_uninstall_held and (any_user or app_uninstall_granted)) but not merchant_suspended
+    define app_view_held: app_view from binding or app_view_held from merchant
+    define app_view_granted: app_view from grant
+    define app_view: (((app_view_held and (any_user or app_view_granted)) or app_view from install) but not merchant_suspended) or merchant_break_glass
+    define agent_grant_held: agent_grant from binding or agent_grant_held from merchant
+    define agent_grant_granted: agent_grant from grant
+    define agent_grant: (agent_grant_held and (any_user or agent_grant_granted)) but not merchant_suspended
+
+condition refund_limit(amount: int, limit: int) {
+  amount <= limit
+}
+
+condition not_expired(current_time: timestamp, expires_at: timestamp) {
+  current_time < expires_at
+}

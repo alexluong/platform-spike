@@ -12,6 +12,8 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/alexluong/platform-spike/go/internal/adapters/openfga"
+	"github.com/alexluong/platform-spike/go/internal/adapters/ory"
 	"github.com/alexluong/platform-spike/go/internal/adapters/spicedb"
 	"github.com/alexluong/platform-spike/go/internal/adapters/zitadel"
 	"github.com/alexluong/platform-spike/go/internal/db"
@@ -68,6 +70,16 @@ func run(log *slog.Logger) error {
 			return err
 		}
 		log.Info("spicedb schema written")
+	case "openfga":
+		if err := retry(log, "openfga store and model", func() error {
+			store, model, err := openfga.Bootstrap(ctx, env("OPENFGA_URL", "http://openfga:8080"))
+			if err == nil {
+				log.Info("openfga model ready", "store", store, "model", model)
+			}
+			return err
+		}); err != nil {
+			return err
+		}
 	default:
 		return fmt.Errorf("unknown AUTHZ %q", os.Getenv("AUTHZ"))
 	}
@@ -86,6 +98,23 @@ func run(log *slog.Logger) error {
 			LoginBaseURI: issuer + "/ui/v2/login/",
 		})
 		if err != nil {
+			return err
+		}
+		out = cfg
+	case "ory":
+		var cfg ory.Config
+		if err := retry(log, "hydra driver client", func() (err error) {
+			cfg, err = ory.Bootstrap(ctx, log, ory.BootstrapInput{
+				Issuer:         env("HYDRA_ISSUER", "http://cs-ws.lab.alexluong.com:4444"),
+				HydraPublicURL: env("HYDRA_PUBLIC_URL", "http://hydra:4444"),
+				HydraAdminURL:  env("HYDRA_ADMIN_URL", "http://hydra:4445"),
+				KratosAdminURL: env("KRATOS_ADMIN_URL", "http://kratos:4434"),
+				Audience:       env("API_AUDIENCE", "platform-spike"),
+				ClientName:     "conformance-driver",
+				RedirectURI:    env("DRIVER_REDIRECT_URI", "http://localhost:3999/callback"),
+			})
+			return err
+		}); err != nil {
 			return err
 		}
 		out = cfg

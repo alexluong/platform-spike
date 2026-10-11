@@ -1,2 +1,163 @@
-# Stack b: filled in by its builder (spec/SPEC.md §11)
-services: {}
+# Stack b: the same Go app as stack a + Ory Kratos (identities) + Ory Hydra (OAuth2/OIDC) + OpenFGA, one Postgres. SPEC §11.
+#   DOCKER_HOST=ssh://cs-ws docker compose -p ps-b --profile b up -d --build
+# Published: app 8082, Kratos public 4433, Hydra public 4444 (issuer), Hydra admin 4445 (the login
+# driver accepts login/consent there, standing in for a login UI; dev only).
+# STACK_B_HOST must be the name clients resolve the docker host by (bare cs-ws does not resolve on the Mac):
+# Hydra's issuer is http://$STACK_B_HOST:4444. Inside the network the app fetches JWKS from b-hydra
+# directly and only compares the issuer string, so no network alias is needed.
+# Dev-only secrets below are placeholders for a local stack.
+
+x-pg-dsn: &pgpass postgres-b-dev-pw
+
+services:
+  b-postgres:
+    profiles: [b]
+    build: ./postgres
+    command: ["postgres", "-c", "max_connections=200"]
+    environment:
+      POSTGRES_PASSWORD: *pgpass
+    volumes: [b-pg:/var/lib/postgresql/data]
+    networks: [b-net]
+    mem_limit: 512m
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d app"]
+      interval: 3s
+      timeout: 5s
+      retries: 30
+
+  b-kratos-migrate:
+    profiles: [b]
+    build: ./kratos
+    image: platform-spike-kratos:b
+    command: ["migrate", "sql", "up", "-e", "--yes", "--config", "/etc/config/kratos/kratos.yaml"]
+    environment:
+      DSN: postgres://postgres:postgres-b-dev-pw@b-postgres:5432/kratos?sslmode=disable
+    networks: [b-net]
+    depends_on:
+      b-postgres: {condition: service_healthy}
+
+  b-kratos:
+    profiles: [b]
+    image: platform-spike-kratos:b
+    command: ["serve", "--dev", "--sqa-opt-out", "--config", "/etc/config/kratos/kratos.yaml"]
+    environment:
+      DSN: postgres://postgres:postgres-b-dev-pw@b-postgres:5432/kratos?sslmode=disable
+      SERVE_PUBLIC_BASE_URL: http://${STACK_B_HOST:-cs-ws.lab.alexluong.com}:4433/
+    ports: ["4433:4433"]
+    networks: [b-net]
+    mem_limit: 256m
+    depends_on:
+      b-kratos-migrate: {condition: service_completed_successfully}
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:4434/health/ready"]
+      interval: 3s
+      timeout: 5s
+      retries: 40
+
+  b-hydra-migrate:
+    profiles: [b]
+    build: ./hydra
+    image: platform-spike-hydra:b
+    command: ["migrate", "sql", "up", "-e", "--yes", "--config", "/etc/config/hydra/hydra.yaml"]
+    environment:
+      DSN: postgres://postgres:postgres-b-dev-pw@b-postgres:5432/hydra?sslmode=disable
+    networks: [b-net]
+    depends_on:
+      b-postgres: {condition: service_healthy}
+
+  b-hydra:
+    profiles: [b]
+    image: platform-spike-hydra:b
+    command: ["serve", "all", "--dev", "--sqa-opt-out", "--config", "/etc/config/hydra/hydra.yaml"]
+    environment:
+      DSN: postgres://postgres:postgres-b-dev-pw@b-postgres:5432/hydra?sslmode=disable
+      URLS_SELF_ISSUER: http://${STACK_B_HOST:-cs-ws.lab.alexluong.com}:4444
+    ports: ["4444:4444", "4445:4445"]
+    networks: [b-net]
+    mem_limit: 256m
+    depends_on:
+      b-hydra-migrate: {condition: service_completed_successfully}
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:4445/health/ready"]
+      interval: 3s
+      timeout: 5s
+      retries: 40
+
+  b-openfga-migrate:
+    profiles: [b]
+    image: openfga/openfga:v1.22.0
+    command: ["migrate", "--datastore-engine", "postgres",
+              "--datastore-uri", "postgres://postgres:postgres-b-dev-pw@b-postgres:5432/openfga?sslmode=disable"]
+    networks: [b-net]
+    depends_on:
+      b-postgres: {condition: service_healthy}
+
+  b-openfga:
+    profiles: [b]
+    image: openfga/openfga:v1.22.0
+    command: ["run", "--datastore-engine", "postgres",
+              "--datastore-uri", "postgres://postgres:postgres-b-dev-pw@b-postgres:5432/openfga?sslmode=disable",
+              "--playground-enabled=false", "--log-format", "text"]
+    networks: [b-net]
+    mem_limit: 512m
+    depends_on:
+      b-openfga-migrate: {condition: service_completed_successfully}
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/grpc_health_probe", "-addr=localhost:8081"]
+      interval: 3s
+      timeout: 5s
+      retries: 40
+
+  b-bootstrap:
+    profiles: [b]
+    build:
+      context: ../../go
+      dockerfile: ../stacks/b/Dockerfile
+    image: platform-spike-go:b
+    command: ["bootstrap"]
+    environment: &appenv
+      PORT: "8082"
+      DATABASE_URL: postgres://postgres:postgres-b-dev-pw@b-postgres:5432/app?sslmode=disable
+      IDP: ory
+      AUTHZ: openfga
+      OPENFGA_URL: http://b-openfga:8080
+      HYDRA_ISSUER: http://${STACK_B_HOST:-cs-ws.lab.alexluong.com}:4444
+      HYDRA_PUBLIC_URL: http://b-hydra:4444
+      HYDRA_ADMIN_URL: http://b-hydra:4445
+      KRATOS_ADMIN_URL: http://b-kratos:4434
+      API_AUDIENCE: platform-spike
+      STACK_CONFIG: /stack/stack.json
+      TEST_MODE: "1"
+      TEST_SECRET: ${TEST_SECRET:-test-secret}
+    volumes: [b-stack:/stack]
+    networks: [b-net]
+    depends_on:
+      b-postgres: {condition: service_healthy}
+      b-kratos: {condition: service_healthy}
+      b-hydra: {condition: service_healthy}
+      b-openfga: {condition: service_healthy}
+
+  b-app:
+    profiles: [b]
+    image: platform-spike-go:b
+    command: ["server"]
+    environment: *appenv
+    ports: ["8082:8082"]
+    volumes: [b-stack:/stack:ro]
+    networks: [b-net]
+    mem_limit: 256m
+    restart: unless-stopped
+    depends_on:
+      b-bootstrap: {condition: service_completed_successfully}
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8082/healthz"]
+      interval: 3s
+      timeout: 5s
+      retries: 40
+
+networks:
+  b-net: {}
+
+volumes:
+  b-pg: {}
+  b-stack: {}

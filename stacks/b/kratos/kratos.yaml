@@ -1,0 +1,51 @@
+# Kratos for stack b. Dev-only secrets (placeholders for a local stack).
+# serve.public.base_url and dsn come from the environment (compose).
+serve:
+  public:
+    base_url: http://localhost:4433/
+  admin:
+    base_url: http://b-kratos:4434/
+
+selfservice:
+  default_browser_return_url: http://localhost:3999/
+  methods:
+    password:
+      enabled: true
+      config:
+        # No outbound calls to haveibeenpwned and no similarity check: test passwords are random.
+        haveibeenpwned_enabled: false
+        identifier_similarity_check_enabled: false
+  flows:
+    # Never served: the login driver uses the API (native) flow, no UI.
+    login:
+      ui_url: http://localhost:3999/login
+    registration:
+      enabled: false
+      ui_url: http://localhost:3999/registration
+    error:
+      ui_url: http://localhost:3999/error
+
+identity:
+  default_schema_id: default
+  schemas:
+    - id: default
+      url: file:///etc/config/kratos/identity.schema.json
+
+# Dev: bcrypt cost 4 (allowed only with --dev). The default 12 costs ~250 ms of CPU per
+# user create and per login; the suite creates and logs in hundreds of users in parallel.
+hashers:
+  algorithm: bcrypt
+  bcrypt:
+    cost: 4
+
+secrets:
+  cookie: [stack-b-dev-cookie-secret-0123456789]
+  cipher: [stack-b-dev-cipher-secret-32char]
+
+courier:
+  smtp:
+    connection_uri: smtp://unused:unused@localhost:1025/?disable_starttls=true
+
+log:
+  level: info
+  format: text
