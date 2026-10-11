@@ -1,2 +1,61 @@
-# Stack c: filled in by its builder (spec/SPEC.md §11)
-services: {}
+# Stack c: TypeScript (Hono) + Better Auth (in the app) + Cerbos + Postgres. SPEC §11.
+#   DOCKER_HOST=ssh://cs-ws docker compose -p ps-c --profile c up -d --build
+# No bind mounts: policies are baked into the Cerbos image, the app is built from ../../ts.
+# Migrations (Better Auth's tables + the app's Drizzle migrations) run idempotently at app start.
+services:
+  c-postgres:
+    profiles: ["c"]
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: ps
+      POSTGRES_PASSWORD: ps-dev-only
+      POSTGRES_DB: ps
+    command: ["postgres", "-c", "shared_buffers=64MB", "-c", "max_connections=60"]
+    volumes:
+      - c-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ps -d ps"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    mem_limit: 384m
+
+  c-cerbos:
+    profiles: ["c"]
+    build: ./cerbos
+    healthcheck:
+      test: ["CMD", "/cerbos", "healthcheck", "--config=/config.yaml"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    mem_limit: 256m
+
+  c-app:
+    profiles: ["c"]
+    build: ../../ts
+    depends_on:
+      c-postgres: { condition: service_healthy }
+      c-cerbos: { condition: service_healthy }
+    environment:
+      PORT: "8083"
+      DATABASE_URL: postgres://ps:ps-dev-only@c-postgres:5432/ps
+      CERBOS_ADDRESS: c-cerbos:3593
+      AUTH_BASE_URL: http://localhost:8083
+      # dev-only secret for the local stack
+      AUTH_SECRET: c-stack-dev-only-secret-6f1e0a9b3c2d4e5f
+      API_RESOURCE: urn:platform-spike:api
+      TEST_MODE: "1"
+      TEST_SECRET: test-secret
+    ports:
+      - "8083:8083"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:8083/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 3s
+      timeout: 3s
+      retries: 40
+      start_period: 5s
+    mem_limit: 512m
+    restart: unless-stopped
+
+volumes:
+  c-pgdata:
