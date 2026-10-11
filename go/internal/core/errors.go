@@ -37,3 +37,6 @@ func AsErr(err error) *Err {
 	}
 	return E(http.StatusInternalServerError, "internal", "")
 }
+
+// MaxCents caps every money amount (prices, order totals, refund limits): 2^31-1 cents (spec §8).
+const MaxCents int64 = 2_147_483_647

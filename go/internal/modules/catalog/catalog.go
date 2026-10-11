@@ -54,7 +54,7 @@ func (m *Module) create(ctx context.Context, r *core.Req) (any, error) {
 	if err := r.Decode(&in); err != nil {
 		return nil, err
 	}
-	if strings.TrimSpace(in.Title) == "" || in.PriceCents == nil || *in.PriceCents < 0 {
+	if strings.TrimSpace(in.Title) == "" || in.PriceCents == nil || *in.PriceCents < 0 || *in.PriceCents > core.MaxCents {
 		return nil, core.BadInput("title and priceCents >= 0 are required")
 	}
 	p := Product{ID: db.NewID("p"), StoreID: r.Target.Resource.ID, Title: strings.TrimSpace(in.Title), PriceCents: *in.PriceCents}
@@ -79,7 +79,7 @@ func (m *Module) update(ctx context.Context, r *core.Req) (any, error) {
 		p.Title = strings.TrimSpace(*in.Title)
 	}
 	if in.PriceCents != nil {
-		if *in.PriceCents < 0 {
+		if *in.PriceCents < 0 || *in.PriceCents > core.MaxCents {
 			return nil, core.BadInput("priceCents must be >= 0")
 		}
 		p.PriceCents = *in.PriceCents

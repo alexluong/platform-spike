@@ -102,7 +102,7 @@ func (m *Module) place(ctx context.Context, r *core.Req) (any, error) {
 			return nil, err
 		}
 		line, ok := mulAdd(o.TotalCents, price, it.Qty)
-		if !ok {
+		if !ok || line > core.MaxCents {
 			return nil, core.BadInput("order total too large")
 		}
 		o.Items = append(o.Items, scope.Item{ProductID: it.ProductID, Qty: it.Qty, UnitPriceCents: price})

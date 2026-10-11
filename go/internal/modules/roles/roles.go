@@ -135,7 +135,7 @@ func (m *Module) create(ctx context.Context, r *core.Req) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	if in.RefundLimitCents != nil && *in.RefundLimitCents < 0 {
+	if in.RefundLimitCents != nil && (*in.RefundLimitCents < 0 || *in.RefundLimitCents > core.MaxCents) {
 		return nil, core.BadInput("refundLimitCents must be >= 0")
 	}
 	if err := guard(ctx, r, r.Target, ps, in.RefundLimitCents); err != nil {
@@ -185,7 +185,7 @@ func (m *Module) update(ctx context.Context, r *core.Req) (any, error) {
 	}
 	if _, present := raw["refundLimitCents"]; present {
 		next.RefundLimitCents = in.RefundLimitCents // explicit null removes the limit
-		if in.RefundLimitCents != nil && *in.RefundLimitCents < 0 {
+		if in.RefundLimitCents != nil && (*in.RefundLimitCents < 0 || *in.RefundLimitCents > core.MaxCents) {
 			return nil, core.BadInput("refundLimitCents must be >= 0")
 		}
 	}
