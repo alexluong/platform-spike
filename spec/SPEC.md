@@ -17,10 +17,20 @@ Stacks `a` and `b` are **one Go codebase**. Switching between them must be confi
 1. **Action = unit of capability.** Every operation is an action with an id `<module>.<verb>` (catalog in §4). A registry lists them. One executor runs every mutating action: authenticate → authorize (`can`) → run → write outbox in the same DB transaction. HTTP handlers are thin adapters onto actions.
 2. **One `can()` in AuthZEN shape.** The executor calls `can({subject, action, resource, context}) → {decision, reason?}` (OpenID AuthZEN 1.0 Access Evaluation shape, in-process). SpiceDB / OpenFGA / Cerbos sit behind it as adapters. A batch form (`canMany`) backs `GET /api/me/permissions`.
 3. **Custom roles are data.** The platform owns the permission catalog and the policy. Merchants create roles (subsets of grantable permissions) and assign them at a scope. Merchants never write policy.
-4. **App DB is the source of truth.** Roles, assignments, installs and grants live in Postgres (Go) / SQLite or Postgres (TS). Where the authz engine stores relationships (SpiceDB, OpenFGA), they are written from an **outbox** row committed in the same transaction as the change. The request that made the change drains its own outbox rows before responding, and later checks use the engine's read-your-writes mechanism (SpiceDB ZedToken / OpenFGA `HIGHER_CONSISTENCY`), so a change is visible to the very next request. A background relay retries anything left over. Cerbos is stateless: the app sends attributes (the PIP is the app).
+4. **App DB is the source of truth.** Roles, assignments, installs and grants live in Postgres (Go) / SQLite or Postgres (TS). Where the authz engine stores relationships (SpiceDB, OpenFGA), they are written from an **outbox** row committed in the same transaction as the change. The request that made the change drains its own outbox rows before responding, and later checks use the engine's read-your-writes mechanism (SpiceDB ZedToken / OpenFGA `HIGHER_CONSISTENCY`), so a change is visible to the very next request. A background relay retries anything left over (failure rules: Operational rules below). Cerbos is stateless: the app sends attributes (the PIP is the app).
 5. **Three checks.** Token/scope (is this credential allowed this kind of thing), relationship (is this subject connected to this resource), condition (attributes: refund limit, status, expiry). All must pass.
 6. **Tenant isolation twice.** Every query is scoped by merchant in SQL, and the authz engine checks too. Customers (buyers) are never put in the authz engine: "my orders" is `WHERE customer_id = me`. Apps have no merchant: their SQL boundary is the install. Before the engine, an app's check needs an `app_installs` row for (app, store), and apps are denied at merchant scope (`c`: gap, §13).
 7. **Composition root by hand.** One `main` wires config → adapters → modules. No DI container, no globals.
+
+### Operational rules
+
+Found by the reviews; the suite tests only the first.
+
+| rule | why | where it bit |
+|---|---|---|
+| **No second connection from the same pool while the request's transaction is open.** Permission checks (`can`, the PIP, guardrails) run on the request's own transaction (`a`, `b`) or on a separate pool (`c`). Every pool has a connection timeout. | N concurrent requests each holding 1 of N connections and waiting for a second deadlock the app for good; `/healthz` hangs too and nothing restarts it. | `c` (60 parallel `/me/permissions` wedged the app). Suite: `permissions.test.ts` "under concurrent load" (60 checks + 30 guarded role creates). The same trap hit Hydra's own pool in `b`. |
+| **The outbox relay retries transient failures forever, in order.** Only errors the adapter classifies as permanent (the engine will never accept the write: SpiceDB `InvalidArgument`/`FailedPrecondition`, OpenFGA 400 validation, unknown event types) are set aside, marked as dead and logged. A failing row blocks the rows after it; log loudly after 10 attempts. | Dropping a row after N attempts left revocations (`app.uninstalled`, `agent_grant.revoked`, `assignment.deleted`, `merchant.suspended`) unapplied in the engine forever. | `a` (fixed). Port: `authz.ErrPermanent`. |
+| **Read-your-writes holds across app instances.** The next request may land on another instance; it must still see the change. | A revoked app or agent kept working on the other instance until the engine's revision caught up (up to 5 s at SpiceDB's default quantization). | **Known limitation in `a`:** the latest ZedToken lives in process memory, so read-your-writes holds for one instance only. Fix: keep the token in the DB or round-trip it to the client. `b` uses `HIGHER_CONSISTENCY` (no token); `c` reads attributes from the DB on every check. |
 
 ## 2. Tenancy and principals
 
@@ -279,6 +289,8 @@ No endpoint lists role assignments, so the owner assignment created with the mer
 |---|---|---|
 | POST | `/api/_test/users` | `{email, password, kind: "platform" \| "user" \| "customer", platformRole?}` → `201 {id, email}`: creates the identity in the real IdP (Zitadel / Kratos / Better Auth) and the app-side record |
 
+| GET | `/api/_test/driver-config` | optional (`a`, `b`): what a real login UI would hold, for the driver (issuer, client id, audience; `a` also hands over Zitadel's `IAM_LOGIN_CLIENT` token) |
+
 A missing or wrong `X-Test-Secret` → 401 or 403.
 
 Everything else is created through the real API. There is no reset: every test creates its own merchant, so tests are independent and can run in parallel.
@@ -306,10 +318,13 @@ The app validates tokens itself (JWT via JWKS, or introspection where the IdP re
 
 ## 11. Runtime
 
-- `compose.yaml` at the repo root with profiles `a`, `b`, `c`. `docker compose --profile a up -d --build` brings up stack `a` with everything it needs (Postgres, IdP, engine, app, migrations, IdP bootstrap) and leaves it healthy with no manual step. Each profile uses its own containers and volumes.
+- `compose.yaml` at the repo root with profiles `a`, `b`, `c`. `docker compose -p ps-a --profile a up -d --build` brings up stack `a` with everything it needs (Postgres, IdP, engine, app, migrations, IdP bootstrap) and leaves it healthy with no manual step. Each profile uses its own containers and volumes; one compose project per stack (`-p ps-<stack>`) keeps `down -v` of one from touching the others.
 - Docker runs on a remote host (`DOCKER_HOST=ssh://cs-ws`). So: **no bind mounts of source code**; images are built from the build context; config files are baked into images or passed as `configs`. Published ports: app as in the table at the top; anything else the drivers need (IdP ports) published too and listed in `conformance/stacks/<stack>.ts`.
-- Bootstrap (IdP clients, keys, the Zitadel service account, Hydra clients, engine schema/model, Cerbos policies) is done by a one-shot container in the profile, idempotent.
-- Run the suite: `cd conformance && STACK=a HOST=cs-ws pnpm test`.
+- **Hostnames.** `cs-ws` is an ssh alias: it works for `DOCKER_HOST` but doesn't resolve as a hostname on the Mac. Clients use `cs-ws.lab.alexluong.com`.
+  - Zitadel (`a`) takes its issuer and instance from the Host header, so the app, the bootstrap and the driver must all reach it under the exact external name. Compose sets `ExternalDomain` and a network alias from `STACK_A_HOST` (default `cs-ws.lab.alexluong.com`). The name is fixed when the instance is created: changing it needs `down -v`.
+  - Hydra (`b`) only needs `iss` to match: `STACK_B_HOST` (same default) sets the issuer string; no `down -v` to change it.
+- Bootstrap (IdP clients, keys, the Zitadel service account, Hydra clients, engine schema/model, Cerbos policies) is idempotent: a one-shot container in the profile (`a`, `b`), or app start when there is nothing outside the app to provision (`c`: Better Auth and Drizzle migrations).
+- Run the suite: `cd conformance && STACK=a HOST=cs-ws.lab.alexluong.com pnpm test` (`SKIP_SLOW=1` skips the 65 s break-glass expiry test; `TEST_SECRET` must match the stack's).
 
 ## 12. Results to record (per stack, in `results/<stack>.md`)
 
@@ -340,6 +355,12 @@ Found by reading the Go (`a`, `b`) and TS (`c`) code against this spec. Rows mar
 | read-your-writes across app instances | `a`: per-process ZedToken (§1.4); `b`: `HIGHER_CONSISTENCY`, no token | attributes read from the DB on every check | `a`: known limitation |
 
 ## 15. Changelog
+
+### v2 (2026-10-11): runtime and operational rules
+
+- §11: run with `HOST=cs-ws.lab.alexluong.com` (bare `cs-ws` is an ssh alias); Zitadel's exact-host issuer; one compose project per stack; bootstrap may run at app start (`c`).
+- §1 Operational rules: no second same-pool connection while the request's transaction is open (review-c 1); relay retries transient failures forever and sets aside only adapter-classified permanent errors (review-a 2); read-your-writes across instances, with `a`'s per-process ZedToken as a known limitation (review-a).
+- §9: optional `GET /api/_test/driver-config` (`a`, `b`).
 
 ### v2 (2026-10-11): shared rules encoded
 

@@ -9,7 +9,7 @@ A mini Shopify (merchants with custom roles, customers, platform staff, apps, AI
 | `c` | TypeScript (Hono) | Better Auth | Cerbos | 8083 |
 
 - Spec: [`spec/SPEC.md`](spec/SPEC.md)
-- Test suite: `conformance/` (`STACK=a HOST=cs-ws pnpm test`)
+- Test suite: `conformance/` (349 tests; all three stacks pass)
 - Per-stack results: `results/<stack>.md`
 
 ## Run
@@ -19,9 +19,13 @@ Docker runs on a remote host; no source bind mounts.
 ```sh
 mise install
 export DOCKER_HOST=ssh://cs-ws
-docker compose --profile a up -d --build      # or b, c
-cd conformance && pnpm install && STACK=a HOST=cs-ws pnpm test
+docker compose -p ps-a --profile a up -d --build      # or b, c (-p ps-b / ps-c)
+cd conformance && pnpm install && STACK=a HOST=cs-ws.lab.alexluong.com pnpm test
 ```
+
+- `cs-ws` is an ssh alias: fine for `DOCKER_HOST`, but it doesn't resolve as a hostname on the Mac. `HOST` must be `cs-ws.lab.alexluong.com`.
+- Zitadel (stack `a`) issues tokens for the exact host clients use (`STACK_A_HOST`, default `cs-ws.lab.alexluong.com`). Changing it needs `down -v`.
+- `SKIP_SLOW=1` skips the 65 s break-glass expiry test.
 
 ## Layout
 
