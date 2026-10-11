@@ -39,17 +39,25 @@ const config = z
   })
   .parse(process.env)
 
-const pool = new pg.Pool({ connectionString: config.DATABASE_URL, max: 20 })
+// Three pools, so no request can deadlock the app. The executor holds a connection from `pool` for
+// the whole transaction, and inside it calls can() (the PIP reads the DB) and, for app/agent
+// registration, Better Auth. If those shared `pool`, N concurrent requests holding N connections
+// would each wait forever for an (N+1)th. PIP and Better Auth only borrow per query, never across an
+// await on another pool, so their pools always drain. The timeout turns any future cycle into errors.
+const poolOpts = { connectionString: config.DATABASE_URL, connectionTimeoutMillis: 10_000 }
+const pool = new pg.Pool({ ...poolOpts, max: 20 })
+const pipPool = new pg.Pool({ ...poolOpts, max: 10 })
+const authPool = new pg.Pool({ ...poolOpts, max: 10 })
 const db = makeDb(pool)
 
 // Migrations (idempotent): Better Auth's tables, then ours.
-const identityConfig = { pool, baseUrl: config.AUTH_BASE_URL, secret: config.AUTH_SECRET, apiResource: config.API_RESOURCE }
+const identityConfig = { pool: authPool, baseUrl: config.AUTH_BASE_URL, secret: config.AUTH_SECRET, apiResource: config.API_RESOURCE }
 await migrateBetterAuth(identityConfig)
 await migrateApp(db, fileURLToPath(new URL('../drizzle', import.meta.url)))
 
 // Adapters
 const identity = makeBetterAuth(identityConfig)
-const pip = makeAccessResolver(db)
+const pip = makeAccessResolver(makeDb(pipPool))
 const authz = makeCerbosAuthorizer({ address: config.CERBOS_ADDRESS, pip })
 const resolvePrincipal = makePrincipalResolver(db, API_SCOPE)
 
