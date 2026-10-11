@@ -412,8 +412,21 @@ func (c *Client) deleteObject(ctx context.Context, object string) error {
 
 var wildcards = []string{"user:*", "agent:*", "app:*"}
 
-// Apply turns one outbox event into tuple writes. Idempotent (duplicates and missing deletes ignored).
+// Apply turns one outbox event into tuple writes. Idempotent: duplicate writes and
+// deletes of missing tuples are ignored by the server (on_duplicate / on_missing), so
+// they never surface as errors. Errors OpenFGA will repeat on every retry (400:
+// the request doesn't fit the model) are marked authz.ErrPermanent; network
+// errors, 404 (store/model not there yet), 429 and 5xx stay transient.
 func (c *Client) Apply(ctx context.Context, ev authz.Event) error {
+	err := c.apply(ctx, ev)
+	var ve fga.FgaApiValidationError
+	if errors.As(err, &ve) {
+		return fmt.Errorf("%w: %w", authz.ErrPermanent, err)
+	}
+	return err
+}
+
+func (c *Client) apply(ctx context.Context, ev authz.Event) error {
 	switch ev.Type {
 	case authz.EvMerchantCreated:
 		m := ref("merchant", ev.MerchantID)
@@ -505,11 +518,11 @@ func (c *Client) Apply(ctx context.Context, ev authz.Event) error {
 	case authz.EvPlatformRoleGranted:
 		relation := map[string]string{"platform_admin": "admin", "support": "support"}[ev.PlatformRole]
 		if relation == "" {
-			return fmt.Errorf("unknown platform role %q", ev.PlatformRole)
+			return fmt.Errorf("%w: unknown platform role %q", authz.ErrPermanent, ev.PlatformRole)
 		}
 		return c.write(ctx, []client.ClientTupleKey{tk("platform:main", relation, ref("staff", ev.UserID))}, nil)
 	}
-	return fmt.Errorf("openfga: unhandled event %q", ev.Type)
+	return fmt.Errorf("%w: openfga: unhandled event %q", authz.ErrPermanent, ev.Type)
 }
 
 // tupleID identifies a tuple including its condition (name + context), so a
