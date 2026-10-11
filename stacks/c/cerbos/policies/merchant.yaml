@@ -32,14 +32,15 @@ resourcePolicy:
         has(P.attr.breakGlass) && R.attr.merchantId in P.attr.breakGlass &&
         now() < timestamp(P.attr.breakGlass[R.attr.merchantId])
   rules:
-    # --- suspension: deny everything for the merchant's own principals ---
+    # --- suspension: deny everything for the merchant's own principals (others get a plain deny,
+    #     so a suspension isn't visible across tenants; apps and agents have no merchant rules) ---
     - name: merchant_suspended
       actions: ["*"]
       effect: EFFECT_DENY
       roles: ["user", "app", "agent"]
       condition:
         match:
-          expr: R.attr.status == "suspended"
+          expr: R.attr.status == "suspended" && V.sameTenant
       output:
         when:
           ruleActivated: '"merchant_suspended"'

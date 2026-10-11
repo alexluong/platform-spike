@@ -137,13 +137,14 @@ tests:
       - { principal: other_tenant, resource: s1, actions: { store.view: EFFECT_DENY, order.view: EFFECT_DENY } }
   - name: suspended merchant denies users, apps and agents
     input:
-      principals: [staff_at_s1, app_s1, agent_live]
+      principals: [staff_at_s1, app_s1, agent_live, other_tenant]
       resources: [s1_suspended]
       actions: ["store.view", "order.view", "product.view"]
     expected:
       - { principal: staff_at_s1, resource: s1_suspended, actions: { store.view: EFFECT_DENY, order.view: EFFECT_DENY, product.view: EFFECT_DENY } }
       - { principal: app_s1, resource: s1_suspended, actions: { store.view: EFFECT_DENY, order.view: EFFECT_DENY, product.view: EFFECT_DENY } }
       - { principal: agent_live, resource: s1_suspended, actions: { store.view: EFFECT_DENY, order.view: EFFECT_DENY, product.view: EFFECT_DENY } }
+      - { principal: other_tenant, resource: s1_suspended, actions: { store.view: EFFECT_DENY, order.view: EFFECT_DENY } }
   - name: app scopes at its install; never role.manage; no refund limit
     input:
       principals: [app_s1]
