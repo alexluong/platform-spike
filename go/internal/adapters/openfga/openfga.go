@@ -127,7 +127,10 @@ func Bootstrap(ctx context.Context, apiURL string) (storeID, modelID string, err
 	return storeID, resp.AuthorizationModelId, nil
 }
 
-// modelRequest converts the generated DSL to the API's JSON shape.
+// modelRequest converts the generated DSL to the SDK's request type. The
+// language package yields a proto; the SDK's JSON tags mix proto names
+// (type_definitions) with camelCase (computedUserset, tupleToUserset), so
+// neither protojson mode decodes into it as is: rename the two camelCase keys.
 func modelRequest() (client.ClientWriteAuthorizationModelRequest, error) {
 	var req client.ClientWriteAuthorizationModelRequest
 	pb, err := transformer.TransformDSLToProto(Model())
@@ -138,7 +141,35 @@ func modelRequest() (client.ClientWriteAuthorizationModelRequest, error) {
 	if err != nil {
 		return req, err
 	}
+	var generic any
+	if err := json.Unmarshal(raw, &generic); err != nil {
+		return req, err
+	}
+	raw, err = json.Marshal(renameKeys(generic, map[string]string{"computed_userset": "computedUserset", "tuple_to_userset": "tupleToUserset"}))
+	if err != nil {
+		return req, err
+	}
 	return req, json.Unmarshal(raw, &req)
+}
+
+func renameKeys(v any, names map[string]string) any {
+	switch x := v.(type) {
+	case map[string]any:
+		out := make(map[string]any, len(x))
+		for k, val := range x {
+			if n, ok := names[k]; ok {
+				k = n
+			}
+			out[k] = renameKeys(val, names)
+		}
+		return out
+	case []any:
+		for i := range x {
+			x[i] = renameKeys(x[i], names)
+		}
+		return x
+	}
+	return v
 }
 
 // sameModel compares type definitions and conditions as canonical JSON.

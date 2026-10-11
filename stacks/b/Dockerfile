@@ -2,7 +2,7 @@
 # go/Dockerfile only in the model check stage: fga model test instead of zed validate.
 FROM openfga/cli:v0.8.1 AS fgacheck
 COPY internal/adapters/openfga/model.fga internal/adapters/openfga/model.fga.yaml /v/
-RUN ["fga", "model", "test", "--tests", "/v/model.fga.yaml"]
+RUN ["/fga", "model", "test", "--tests", "/v/model.fga.yaml"]
 
 FROM golang:1.27-alpine AS build
 WORKDIR /src

@@ -68,3 +68,22 @@ func TestFGAModelTest(t *testing.T) {
 	}
 	t.Logf("%s", out)
 }
+
+// The SDK request built from the DSL keeps every rewrite (a dropped oneof key
+// would leave a relation with an empty definition, which the server rejects).
+func TestModelRequestKeepsRewrites(t *testing.T) {
+	req, err := modelRequest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, td := range req.TypeDefinitions {
+		for name, us := range td.GetRelations() {
+			if us.This == nil && us.ComputedUserset == nil && us.TupleToUserset == nil && us.Union == nil && us.Intersection == nil && us.Difference == nil {
+				t.Errorf("%s#%s: empty rewrite", td.Type, name)
+			}
+		}
+	}
+	if len(req.GetConditions()) != 2 {
+		t.Errorf("conditions: %v", req.GetConditions())
+	}
+}
