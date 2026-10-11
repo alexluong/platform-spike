@@ -121,3 +121,38 @@ func TestSameModelIgnoresEchoedEmptyFields(t *testing.T) {
 		t.Fatal("echoed model compares different")
 	}
 }
+
+// An empty object can carry meaning: "wildcard": {} (user:* vs user) and "this": {}
+// (a direct relation). A model change that only toggles a wildcard must be written.
+func TestSameModelSeesWildcardChange(t *testing.T) {
+	want, err := modelRequest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := json.Marshal(want)
+	var got map[string]any
+	_ = json.Unmarshal(raw, &got)
+	changed := false
+	for _, td := range got["type_definitions"].([]any) {
+		m := td.(map[string]any)
+		if m["type"] != "role" {
+			continue
+		}
+		rels := m["metadata"].(map[string]any)["relations"].(map[string]any)
+		for _, ref := range rels["role_manage_owner"].(map[string]any)["directly_related_user_types"].([]any) {
+			delete(ref.(map[string]any), "wildcard") // user:* → user
+			changed = true
+		}
+	}
+	if !changed {
+		t.Fatal("test setup: role#role_manage_owner not found")
+	}
+	raw, _ = json.Marshal(got)
+	var other fga.AuthorizationModel
+	if err := json.Unmarshal(raw, &other); err != nil {
+		t.Fatal(err)
+	}
+	if sameModel(want, &other) {
+		t.Fatal("[user:*] and [user] compare equal: the bootstrap would skip the model write")
+	}
+}
