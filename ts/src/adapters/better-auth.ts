@@ -6,6 +6,7 @@ import { getMigrations } from 'better-auth/db/migration'
 import { verifyJwsAccessToken } from 'better-auth/oauth2'
 import { bearer, jwt } from 'better-auth/plugins'
 import { oauthProvider } from '@better-auth/oauth-provider'
+import { randomBytes, timingSafeEqual } from 'node:crypto'
 import type pg from 'pg'
 
 /** What the app learns from a valid credential (before mapping to app records). */
@@ -17,11 +18,37 @@ export interface IdentityConfig {
   secret: string
   /** RFC 8707 resource identifier for this API; the `aud` of client tokens. */
   apiResource: string
+  /** Better Auth's rate limiter (sign-in: 3 per 10 s per IP). Off only for the test stack, which signs
+   *  in hundreds of users from one IP. */
+  rateLimit: boolean
+  /** Header carrying the client IP, set by a trusted proxy (e.g. x-forwarded-for). Without it the
+   *  limiter can't tell clients apart and puts every request in one shared bucket. */
+  ipHeader?: string
+  /** Shared secret for the app's own client-registration calls (see internalOnlyClientPrivileges). */
+  internalKey: string
 }
+
+const INTERNAL_HEADER = 'x-platform-internal'
+
+/** OAuth client admin is for the app's own server-side calls only. Better Auth checks this hook on
+ *  every client mutation, for any caller with a session, so `async () => true` would let any signed-in
+ *  user (customers too) create, read, rotate or delete clients the moment one of those routes is
+ *  mounted. Only requests carrying the per-process key, and only the actions we use, pass. */
+export function internalOnlyClientPrivileges(internalKey: string) {
+  const want = Buffer.from(internalKey)
+  return async ({ headers, action }: { headers: Headers; action: string }) => {
+    if (action !== 'create' && action !== 'configure-client-credentials-scopes') return false
+    const got = Buffer.from(headers.get(INTERNAL_HEADER) ?? '')
+    return got.length === want.length && timingSafeEqual(got, want)
+  }
+}
+
+/** A fresh random key per process (clients are only created in-process). */
+export const newInternalKey = () => randomBytes(32).toString('hex')
 
 export const API_SCOPE = 'api'
 
-function authOptions(cfg: IdentityConfig) {
+export function authOptions(cfg: IdentityConfig) {
   return {
     baseURL: cfg.baseUrl,
     basePath: '/api/auth',
@@ -29,12 +56,16 @@ function authOptions(cfg: IdentityConfig) {
     database: cfg.pool,
     emailAndPassword: { enabled: true, minPasswordLength: 8 },
     telemetry: { enabled: false },
-    // The suite signs in hundreds of users from one IP; Better Auth's limiter (one shared bucket
-    // when it can't see a client IP) would 429 them. Off for this spike stack.
-    rateLimit: { enabled: false },
-    // Bearer-only API (no cookies): sign-in from a headless client has no Origin header, which
-    // Better Auth 1.7 rejects (MISSING_OR_NULL_ORIGIN). CSRF needs cookies, so the check is moot here.
-    advanced: { disableCSRFCheck: true },
+    rateLimit: { enabled: cfg.rateLimit },
+    advanced: {
+      // Bearer-only API: /api reads only the Authorization header, and the only Better Auth routes
+      // mounted are sign-in, token, jwks and discovery, so no cookie ever authenticates anything and
+      // login CSRF has nothing to ride on. Node's fetch sends Sec-Fetch-Mode without an Origin, which
+      // Better Auth 1.7 rejects (MISSING_OR_NULL_ORIGIN). callbackURL validation stays on.
+      // Revisit (trustedOrigins + this check on) before any browser uses cookie sessions.
+      disableCSRFCheck: true,
+      ...(cfg.ipHeader ? { ipAddress: { ipAddressHeaders: [cfg.ipHeader] } } : {}),
+    },
     plugins: [
       bearer(),
       jwt(),
@@ -43,8 +74,7 @@ function authOptions(cfg: IdentityConfig) {
         consentPage: '/consent',
         scopes: [API_SCOPE],
         grantTypes: ['client_credentials'],
-        // Only the app's own server-side calls create clients (the HTTP routes are not mounted).
-        clientPrivileges: async () => true,
+        clientPrivileges: internalOnlyClientPrivileges(cfg.internalKey),
         resources: [{ identifier: cfg.apiResource, allowedScopes: [API_SCOPE] }],
         clientRegistrationDefaultResources: [cfg.apiResource],
       }),
@@ -104,10 +134,11 @@ export function makeBetterAuth(cfg: IdentityConfig) {
     },
 
     /** Register an OAuth client (client_credentials, scope api) for an app or agent. Better Auth's
-     *  admin endpoint wants a session, so the calling user's credential is passed through. */
+     *  admin endpoint wants a session, so the calling user's credential is passed through (the client
+     *  is recorded as owned by that user); the internal key is what authorizes the call. */
     async createClient(name: string, actorCredential: string): Promise<{ clientId: string; clientSecret: string }> {
       const c = (await auth.api.adminCreateOAuthClient({
-        headers: new Headers({ authorization: actorCredential }),
+        headers: new Headers({ authorization: actorCredential, [INTERNAL_HEADER]: cfg.internalKey }),
         body: {
           client_name: name,
           grant_types: ['client_credentials'],

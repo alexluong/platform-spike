@@ -4,7 +4,7 @@ import { sql } from 'drizzle-orm'
 import { fileURLToPath } from 'node:url'
 import pg from 'pg'
 import { z } from 'zod'
-import { makeBetterAuth, migrateBetterAuth, API_SCOPE } from './adapters/better-auth.js'
+import { makeBetterAuth, migrateBetterAuth, newInternalKey, API_SCOPE } from './adapters/better-auth.js'
 import { makeCerbosAuthorizer } from './adapters/cerbos.js'
 import { makeDb, migrateApp } from './db/client.js'
 import { appUsers } from './db/schema.js'
@@ -34,6 +34,8 @@ const config = z
     AUTH_BASE_URL: z.string().default('http://localhost:8083'),
     AUTH_SECRET: z.string().min(32),
     API_RESOURCE: z.string().default('urn:platform-spike:api'),
+    AUTH_RATE_LIMIT: z.enum(['on', 'off']).default('on'),
+    AUTH_IP_HEADER: z.string().optional(),
     TEST_MODE: z.string().optional(),
     TEST_SECRET: z.string().optional(),
   })
@@ -51,7 +53,15 @@ const authPool = new pg.Pool({ ...poolOpts, max: 10 })
 const db = makeDb(pool)
 
 // Migrations (idempotent): Better Auth's tables, then ours.
-const identityConfig = { pool: authPool, baseUrl: config.AUTH_BASE_URL, secret: config.AUTH_SECRET, apiResource: config.API_RESOURCE }
+const identityConfig = {
+  pool: authPool,
+  baseUrl: config.AUTH_BASE_URL,
+  secret: config.AUTH_SECRET,
+  apiResource: config.API_RESOURCE,
+  rateLimit: config.AUTH_RATE_LIMIT === 'on',
+  ipHeader: config.AUTH_IP_HEADER,
+  internalKey: newInternalKey(),
+}
 await migrateBetterAuth(identityConfig)
 await migrateApp(db, fileURLToPath(new URL('../drizzle', import.meta.url)))
 

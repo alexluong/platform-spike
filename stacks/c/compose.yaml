@@ -44,6 +44,8 @@ services:
       # dev-only secret for the local stack
       AUTH_SECRET: c-stack-dev-only-secret-6f1e0a9b3c2d4e5f
       API_RESOURCE: urn:platform-spike:api
+      # the suite signs in hundreds of users from one IP; production keeps it on and sets AUTH_IP_HEADER
+      AUTH_RATE_LIMIT: "off"
       TEST_MODE: "1"
       TEST_SECRET: test-secret
     ports:
