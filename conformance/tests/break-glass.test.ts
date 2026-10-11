@@ -49,6 +49,15 @@ describe('opening a break-glass grant', () => {
 })
 
 describe('under break-glass', () => {
+  test('listing a merchant\'s stores is audited too (regression: resource search skipped the audit)', async () => {
+    const [support, { m, s }] = await Promise.all([newSupport(), merchantWithStore()])
+    await openBreakGlass(support, m.id)
+    const items = ok(await support.api.get<Items<{ id: string }>>(`/api/merchants/${m.id}/stores`), 200).items
+    expect(items.map((x) => x.id)).toContain(s.id)
+    const mine = (await audit(m.id)).filter((e) => isActor(e, support) && e.action !== 'platform.break_glass')
+    expect(mine.length, JSON.stringify(mine)).toBeGreaterThanOrEqual(1)
+  })
+
   test('*.view reads succeed; each one is audited; entries are newest first', async () => {
     const [support, { m, s }] = await Promise.all([newSupport(), merchantWithStore()])
     const order = await m.paidOrder(s.id, 1200)

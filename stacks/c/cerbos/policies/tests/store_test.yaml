@@ -1,0 +1,181 @@
+name: StoreTests
+description: roles as data, refund limits, suspension, apps, agents with expiry, break-glass
+options:
+  now: "2026-10-11T12:00:00Z"
+principals:
+  staff_at_s1:      # custom role at store s1 only
+    id: u1
+    roles: ["user"]
+    attr:
+      merchantId: m1
+      access:
+        owner: false
+        merchantPerms: []
+        merchantRefundLimits: []
+        stores:
+          s1: { perms: ["store.view", "order.view", "order.refund"], refundLimits: [5000] }
+  manager:          # merchant scope: product.view + refund up to 1000, plus store s1 refund with no limit
+    id: u2
+    roles: ["user"]
+    attr:
+      merchantId: m1
+      access:
+        owner: false
+        merchantPerms: ["store.view", "product.view", "order.refund"]
+        merchantRefundLimits: [1000]
+        stores:
+          s1: { perms: ["order.refund"], refundLimits: [-1] }
+  other_tenant:
+    id: u3
+    roles: ["user"]
+    attr:
+      merchantId: m2
+      access: { owner: true, merchantPerms: ["store.view", "order.view"], merchantRefundLimits: [], stores: {} }
+  app_s1:
+    id: app1
+    roles: ["app"]
+    attr:
+      installs:
+        s1: ["product.view", "order.refund", "role.manage"]
+  agent_live:
+    id: ag1
+    roles: ["agent"]
+    attr:
+      merchantId: m1
+      grants:
+        s1:
+          - perms: ["order.view", "order.refund", "product.create"]
+            expiresAt: "2026-10-11T13:00:00Z"
+            granter:
+              merchantPerms: ["order.view", "order.refund"]   # granter lost product.create
+              merchantRefundLimits: [2000]
+              stores: {}
+  agent_expired:
+    id: ag2
+    roles: ["agent"]
+    attr:
+      merchantId: m1
+      grants:
+        s1:
+          - perms: ["order.view"]
+            expiresAt: "2026-10-11T11:59:59Z"
+            granter: { merchantPerms: ["order.view"], merchantRefundLimits: [], stores: {} }
+  support_bg:
+    id: p1
+    roles: ["support"]
+    attr:
+      breakGlass: { m1: "2026-10-11T12:30:00Z", m2: "2026-10-11T11:00:00Z" }
+resources:
+  s1:
+    kind: store
+    id: s1
+    attr: { merchantId: m1, storeId: s1, status: active }
+  s2:
+    kind: store
+    id: s2
+    attr: { merchantId: m1, storeId: s2, status: active }
+  s1_refund_800:
+    kind: store
+    id: s1
+    attr: { merchantId: m1, storeId: s1, status: active, amountCents: 800 }
+  s1_refund_3000:
+    kind: store
+    id: s1
+    attr: { merchantId: m1, storeId: s1, status: active, amountCents: 3000 }
+  s1_refund_9000:
+    kind: store
+    id: s1
+    attr: { merchantId: m1, storeId: s1, status: active, amountCents: 9000 }
+  s2_refund_3000:
+    kind: store
+    id: s2
+    attr: { merchantId: m1, storeId: s2, status: active, amountCents: 3000 }
+  s1_suspended:
+    kind: store
+    id: s1
+    attr: { merchantId: m1, storeId: s1, status: suspended }
+  m2_store:
+    kind: store
+    id: s9
+    attr: { merchantId: m2, storeId: s9, status: active }
+tests:
+  - name: store-scoped custom role applies at its store only
+    input:
+      principals: [staff_at_s1]
+      resources: [s1, s2]
+      actions: ["store.view", "order.view", "order.cancel"]
+    expected:
+      - principal: staff_at_s1
+        resource: s1
+        actions: { store.view: EFFECT_ALLOW, order.view: EFFECT_ALLOW, order.cancel: EFFECT_DENY }
+      - principal: staff_at_s1
+        resource: s2
+        actions: { store.view: EFFECT_DENY, order.view: EFFECT_DENY, order.cancel: EFFECT_DENY }
+  - name: refund limit from the role
+    input:
+      principals: [staff_at_s1]
+      resources: [s1_refund_3000, s1_refund_9000]
+      actions: ["order.refund"]
+    expected:
+      - { principal: staff_at_s1, resource: s1_refund_3000, actions: { order.refund: EFFECT_ALLOW } }
+      - { principal: staff_at_s1, resource: s1_refund_9000, actions: { order.refund: EFFECT_DENY } }
+  - name: highest limit wins, no limit beats any limit
+    input:
+      principals: [manager]
+      resources: [s1_refund_9000, s2_refund_3000, s1]
+      actions: ["order.refund", "product.view"]
+    expected:
+      - { principal: manager, resource: s1_refund_9000, actions: { order.refund: EFFECT_ALLOW, product.view: EFFECT_ALLOW } }
+      - { principal: manager, resource: s2_refund_3000, actions: { order.refund: EFFECT_DENY, product.view: EFFECT_ALLOW } }
+      - { principal: manager, resource: s1, actions: { order.refund: EFFECT_ALLOW, product.view: EFFECT_ALLOW } }
+  - name: other tenant is denied
+    input:
+      principals: [other_tenant]
+      resources: [s1]
+      actions: ["store.view", "order.view"]
+    expected:
+      - { principal: other_tenant, resource: s1, actions: { store.view: EFFECT_DENY, order.view: EFFECT_DENY } }
+  - name: suspended merchant denies users, apps and agents
+    input:
+      principals: [staff_at_s1, app_s1, agent_live, other_tenant]
+      resources: [s1_suspended]
+      actions: ["store.view", "order.view", "product.view"]
+    expected:
+      - { principal: staff_at_s1, resource: s1_suspended, actions: { store.view: EFFECT_DENY, order.view: EFFECT_DENY, product.view: EFFECT_DENY } }
+      - { principal: app_s1, resource: s1_suspended, actions: { store.view: EFFECT_DENY, order.view: EFFECT_DENY, product.view: EFFECT_DENY } }
+      - { principal: agent_live, resource: s1_suspended, actions: { store.view: EFFECT_DENY, order.view: EFFECT_DENY, product.view: EFFECT_DENY } }
+      - { principal: other_tenant, resource: s1_suspended, actions: { store.view: EFFECT_DENY, order.view: EFFECT_DENY } }
+  - name: app scopes at its install; never role.manage; no refund limit
+    input:
+      principals: [app_s1]
+      resources: [s1, s2, s1_refund_9000]
+      actions: ["product.view", "order.view", "role.manage", "order.refund"]
+    expected:
+      - { principal: app_s1, resource: s1, actions: { product.view: EFFECT_ALLOW, order.view: EFFECT_DENY, role.manage: EFFECT_DENY, order.refund: EFFECT_ALLOW } }
+      - { principal: app_s1, resource: s2, actions: { product.view: EFFECT_DENY, order.view: EFFECT_DENY, role.manage: EFFECT_DENY, order.refund: EFFECT_DENY } }
+      - { principal: app_s1, resource: s1_refund_9000, actions: { product.view: EFFECT_ALLOW, order.view: EFFECT_DENY, role.manage: EFFECT_DENY, order.refund: EFFECT_ALLOW } }
+  - name: agent needs a live grant and a granter who still holds the action; granter's limit
+    input:
+      principals: [agent_live]
+      resources: [s1, s2, s1_refund_800, s1_refund_3000]
+      actions: ["order.view", "product.create", "order.refund"]
+    expected:
+      - { principal: agent_live, resource: s1, actions: { order.view: EFFECT_ALLOW, product.create: EFFECT_DENY, order.refund: EFFECT_ALLOW } }
+      - { principal: agent_live, resource: s2, actions: { order.view: EFFECT_DENY, product.create: EFFECT_DENY, order.refund: EFFECT_DENY } }
+      - { principal: agent_live, resource: s1_refund_800, actions: { order.view: EFFECT_ALLOW, product.create: EFFECT_DENY, order.refund: EFFECT_ALLOW } }
+      - { principal: agent_live, resource: s1_refund_3000, actions: { order.view: EFFECT_ALLOW, product.create: EFFECT_DENY, order.refund: EFFECT_DENY } }
+  - name: expired agent grant is denied without any cleanup
+    input:
+      principals: [agent_expired]
+      resources: [s1]
+      actions: ["order.view"]
+    expected:
+      - { principal: agent_expired, resource: s1, actions: { order.view: EFFECT_DENY } }
+  - name: break-glass is read-only and expires
+    input:
+      principals: [support_bg]
+      resources: [s1, m2_store]
+      actions: ["order.view", "product.view", "order.cancel", "product.create"]
+    expected:
+      - { principal: support_bg, resource: s1, actions: { order.view: EFFECT_ALLOW, product.view: EFFECT_ALLOW, order.cancel: EFFECT_DENY, product.create: EFFECT_DENY } }
+      - { principal: support_bg, resource: m2_store, actions: { order.view: EFFECT_DENY, product.view: EFFECT_DENY, order.cancel: EFFECT_DENY, product.create: EFFECT_DENY } }
