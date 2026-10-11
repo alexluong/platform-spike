@@ -41,7 +41,8 @@ services:
     image: platform-spike-kratos:b
     command: ["serve", "--dev", "--sqa-opt-out", "--config", "/etc/config/kratos/kratos.yaml"]
     environment:
-      DSN: postgres://postgres:postgres-b-dev-pw@b-postgres:5432/kratos?sslmode=disable
+      # Same pool sizing as Hydra (default 2×CPUs).
+      DSN: postgres://postgres:postgres-b-dev-pw@b-postgres:5432/kratos?sslmode=disable&max_conns=30&max_idle_conns=10
       SERVE_PUBLIC_BASE_URL: http://${STACK_B_HOST:-cs-ws.lab.alexluong.com}:4433/
     ports: ["4433:4433"]
     networks: [b-net]
@@ -70,7 +71,9 @@ services:
     image: platform-spike-hydra:b
     command: ["serve", "all", "--dev", "--sqa-opt-out", "--config", "/etc/config/hydra/hydra.yaml"]
     environment:
-      DSN: postgres://postgres:postgres-b-dev-pw@b-postgres:5432/hydra?sslmode=disable
+      # Default pool is 2×CPUs (8 here). Under the suite's parallel logins every connection sat
+      # "idle in transaction" waiting for a second one: requests hung until the client gave up.
+      DSN: postgres://postgres:postgres-b-dev-pw@b-postgres:5432/hydra?sslmode=disable&max_conns=50&max_idle_conns=20
       URLS_SELF_ISSUER: http://${STACK_B_HOST:-cs-ws.lab.alexluong.com}:4444
     ports: ["4444:4444", "4445:4445"]
     networks: [b-net]
