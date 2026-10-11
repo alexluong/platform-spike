@@ -29,6 +29,12 @@ function authOptions(cfg: IdentityConfig) {
     database: cfg.pool,
     emailAndPassword: { enabled: true, minPasswordLength: 8 },
     telemetry: { enabled: false },
+    // The suite signs in hundreds of users from one IP; Better Auth's limiter (one shared bucket
+    // when it can't see a client IP) would 429 them. Off for this spike stack.
+    rateLimit: { enabled: false },
+    // Bearer-only API (no cookies): sign-in from a headless client has no Origin header, which
+    // Better Auth 1.7 rejects (MISSING_OR_NULL_ORIGIN). CSRF needs cookies, so the check is moot here.
+    advanced: { disableCSRFCheck: true },
     plugins: [
       bearer(),
       jwt(),
