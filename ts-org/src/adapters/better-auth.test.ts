@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { TX_CONTROL, authOptions, internalOnlyClientPrivileges, orgOptions } from './better-auth.js'
+import { TX_CONTROL, authOptions, internalOnlyClientPrivileges, orgOptions, tokenRequestClientId } from './better-auth.js'
 
 describe('OAuth client privileges', () => {
   const allow = internalOnlyClientPrivileges('k'.repeat(64))
@@ -53,5 +53,21 @@ describe('organization plugin (SPEC §15)', () => {
   it("transaction control never runs on the app's transaction connection", () => {
     for (const q of ['begin', 'BEGIN', ' start transaction', 'commit', 'rollback', 'savepoint sp1', 'release sp1', 'end']) expect(TX_CONTROL.test(q)).toBe(true)
     for (const q of ['select * from "member"', 'insert into "organization" ("id") values ($1)', 'update "invitation" set "status" = $1']) expect(TX_CONTROL.test(q)).toBe(false)
+  })
+})
+
+describe('token-endpoint login policy: which client (review-d)', () => {
+  const basic = (id: string, secret = 's') => `Basic ${Buffer.from(`${id}:${secret}`).toString('base64')}`
+  it('client_secret_post: the body', () => {
+    expect(tokenRequestClientId({ client_id: 'c1' }, undefined)).toBe('c1')
+  })
+  it('client_secret_basic: the header wins over the body (the provider reads it first)', () => {
+    expect(tokenRequestClientId({}, basic('c1'))).toBe('c1')
+    expect(tokenRequestClientId({ client_id: 'other' }, basic('c1'))).toBe('c1')
+    expect(tokenRequestClientId({}, basic('c%3A1'))).toBe('c:1')
+  })
+  it('no client: nothing to check (the provider rejects it)', () => {
+    expect(tokenRequestClientId({}, undefined)).toBeUndefined()
+    expect(tokenRequestClientId({}, 'Bearer x')).toBeUndefined()
   })
 })
