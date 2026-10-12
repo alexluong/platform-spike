@@ -1,0 +1,14 @@
+# Platform-level actions (SPEC §4, §7). Plain RBAC on the platform role; no attributes.
+apiVersion: api.cerbos.dev/v1
+resourcePolicy:
+  version: default
+  resource: platform
+  rules:
+    - name: admin
+      actions: ["platform.merchant.create", "platform.merchant.view", "platform.merchant.suspend", "platform.audit.view", "platform.app.register"]
+      effect: EFFECT_ALLOW
+      roles: ["platform_admin"]
+    - name: support
+      actions: ["platform.merchant.view"]
+      effect: EFFECT_ALLOW
+      roles: ["support"]
