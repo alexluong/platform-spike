@@ -88,6 +88,9 @@ type Event struct {
 
 	// platform_role.assigned
 	PlatformRole string `json:"platformRole,omitempty"`
+
+	// member.*, agent.registered: the IdP subject of the user or agent (for identity sync).
+	Subject string `json:"subject,omitempty"`
 }
 
 // Event types.
@@ -106,6 +109,12 @@ const (
 	EvAgentGrantRevoked   = "agent_grant.revoked"
 	EvBreakGlassOpened    = "break_glass.opened"
 	EvPlatformRoleGranted = "platform_role.granted"
+
+	// Membership and agent lifecycle facts. Engines ignore them (membership reaches the
+	// engine as assignments); an identity sync with tenancy (stack a2) applies them to the IdP.
+	EvMemberAdded     = "member.added"
+	EvMemberRemoved   = "member.removed"
+	EvAgentRegistered = "agent.registered"
 )
 
 // RelationSync applies outbox events to the engine. Stateless engines (Cerbos)

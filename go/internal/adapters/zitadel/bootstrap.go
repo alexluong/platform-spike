@@ -20,6 +20,9 @@ type BootstrapInput struct {
 	AppName      string
 	RedirectURI  string
 	LoginBaseURI string // login v2 base URI configured on the app (never served; the driver stands in)
+	// Orgs: organizations mode (stack a2): roles and login check on the project, role
+	// claims in access tokens, home orgs for merchant users and customers.
+	Orgs bool
 }
 
 // Bootstrap ensures the project and the PKCE OIDC app exist and returns the app config.
@@ -33,7 +36,17 @@ func Bootstrap(ctx context.Context, log *slog.Logger, in BootstrapInput) (Config
 	if err != nil {
 		return Config{}, err
 	}
-	z := func(method, path string, body, out any) error { return call(ctx, hc, in.Issuer, adminPAT, method, path, body, out) }
+	z := func(method, path string, body, out any) error {
+		return call(ctx, hc, in.Issuer, adminPAT, method, path, body, out)
+	}
+	projectSettings := map[string]any{"name": in.ProjectName}
+	if in.Orgs {
+		// Check authorization on authentication: a human needs an active authorization on
+		// the project to log in (how a suspended merchant's people are locked out), and
+		// role claims (the member role names the merchant org) go into tokens.
+		projectSettings["projectRoleAssertion"] = true
+		projectSettings["projectRoleCheck"] = true
+	}
 
 	// Wait until the API answers with our PAT (projections may lag right after setup).
 	var org struct {
@@ -68,15 +81,29 @@ func Bootstrap(ctx context.Context, log *slog.Logger, in BootstrapInput) (Config
 	var projectID string
 	if len(projects.Result) > 0 {
 		projectID = projects.Result[0].ID
+		if in.Orgs {
+			// Re-runs: make sure the settings hold ("not changed" is fine).
+			if err := z("PUT", "/management/v1/projects/"+projectID, projectSettings, nil); err != nil && !strings.Contains(err.Error(), "NotChanged") {
+				return Config{}, err
+			}
+		}
 	} else {
 		var p struct {
 			ID string `json:"id"`
 		}
-		if err := z("POST", "/management/v1/projects", map[string]any{"name": in.ProjectName}, &p); err != nil {
+		if err := z("POST", "/management/v1/projects", projectSettings, &p); err != nil {
 			return Config{}, err
 		}
 		projectID = p.ID
 		log.Info("created project", "id", projectID)
+	}
+	if in.Orgs {
+		for _, role := range []string{RoleAccount, RoleMember} {
+			err := z("POST", "/management/v1/projects/"+projectID+"/roles", map[string]any{"roleKey": role, "displayName": role}, nil)
+			if err != nil && !strings.Contains(err.Error(), "AlreadyExists") && !isStatus(err, http.StatusConflict) {
+				return Config{}, err
+			}
+		}
 	}
 
 	var apps struct {
@@ -106,7 +133,7 @@ func Bootstrap(ctx context.Context, log *slog.Logger, in BootstrapInput) (Config
 			"accessTokenType":          "OIDC_TOKEN_TYPE_JWT",
 			"devMode":                  true, // http redirect URI
 			"version":                  "OIDC_VERSION_1_0",
-			"accessTokenRoleAssertion": false,
+			"accessTokenRoleAssertion": in.Orgs,
 			"loginVersion":             map[string]any{"loginV2": map[string]any{"baseUri": in.LoginBaseURI}},
 		}, &a); err != nil {
 			return Config{}, err
@@ -117,10 +144,27 @@ func Bootstrap(ctx context.Context, log *slog.Logger, in BootstrapInput) (Config
 	if clientID == "" {
 		return Config{}, errors.New("no client id for oidc app")
 	}
-	return Config{
+	cfg := Config{
 		Issuer: in.Issuer, OrgID: org.Org.ID, ProjectID: projectID, ClientID: clientID,
 		RedirectURI: in.RedirectURI, AdminPAT: adminPAT, LoginClientPAT: loginPAT,
-	}, nil
+	}
+	if in.Orgs {
+		// Home orgs for humans outside merchants (ids chosen here, so re-runs find them).
+		c := &Client{cfg: Config{Issuer: in.Issuer, AdminPAT: adminPAT}, http: hc}
+		for _, o := range []string{"people", "customers"} {
+			err := c.rpc(ctx, "zitadel.org.v2.OrganizationService/AddOrganization", map[string]any{"name": o, "organizationId": o}, nil)
+			if err != nil && !isCode(err, "already_exists") {
+				return Config{}, err
+			}
+		}
+		cfg.Orgs, cfg.PeopleOrgID, cfg.CustomersOrgID = true, "people", "customers"
+	}
+	return cfg, nil
+}
+
+func isStatus(err error, status int) bool {
+	var ae *APIError
+	return errors.As(err, &ae) && ae.Status == status
 }
 
 func waitFile(ctx context.Context, path string) (string, error) {

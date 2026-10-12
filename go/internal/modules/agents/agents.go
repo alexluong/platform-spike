@@ -58,12 +58,18 @@ func (m *Module) register(ctx context.Context, r *core.Req) (any, error) {
 		return nil, core.BadInput("name is required")
 	}
 	id := db.NewID("ag")
-	c, err := m.IdP.CreateClient(ctx, id)
+	// The IdP call can't join the transaction. IdPs with tenancy create the client disabled
+	// and enable it from the agent.registered outbox row, so a rolled-back registration
+	// leaves an inert client (review-a finding 12).
+	c, err := m.IdP.CreateClient(ctx, id, r.P.MerchantID)
 	if err != nil {
 		return nil, err
 	}
 	if _, err := r.Tx.Exec(ctx, `INSERT INTO agents(id, merchant_id, owner_user_id, name, client_id, idp_subject) VALUES ($1,$2,$3,$4,$5,$6)`,
 		id, r.P.MerchantID, r.P.ID, strings.TrimSpace(in.Name), c.ClientID, c.Subject); err != nil {
+		return nil, err
+	}
+	if err := r.Emit(ctx, authz.Event{Type: authz.EvAgentRegistered, MerchantID: r.P.MerchantID, AgentID: id, Subject: c.Subject}); err != nil {
 		return nil, err
 	}
 	return map[string]any{"id": id, "clientId": c.ClientID, "clientSecret": c.ClientSecret}, nil

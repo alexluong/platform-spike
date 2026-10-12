@@ -1,5 +1,7 @@
 // Command server is the composition root: config → adapters → modules, by hand.
 // Stack a: IDP=zitadel AUTHZ=spicedb. Stack b: IDP=ory AUTHZ=openfga.
+// Stack a2: IDP=zitadel-orgs AUTHZ=spicedb (an organization per merchant; the IdP is a
+// second outbox consumer).
 package main
 
 import (
@@ -80,13 +82,18 @@ func run(log *slog.Logger) error {
 	defer pool.Close()
 
 	var id idp
+	var idSync *outbox.Relay // identity sync: IdPs that own tenancy consume the outbox too
 	switch env("IDP", "zitadel") {
-	case "zitadel":
+	case "zitadel", "zitadel-orgs":
 		var cfg zitadel.Config
 		if err := readJSON(env("STACK_CONFIG", "/bootstrap/stack.json"), &cfg); err != nil {
 			return err
 		}
-		id = zitadel.New(ctx, cfg)
+		z := zitadel.New(ctx, cfg)
+		id = z
+		if cfg.Orgs {
+			idSync = &outbox.Relay{DB: pool, Sync: z, Log: log, Consumer: "identity", Lock: 778, Partitioned: true, Accepts: zitadel.SyncsEvent}
+		}
 	case "ory":
 		var cfg ory.Config
 		if err := readJSON(env("STACK_CONFIG", "/bootstrap/stack.json"), &cfg); err != nil {
@@ -115,8 +122,11 @@ func run(log *slog.Logger) error {
 		return fmt.Errorf("unknown AUTHZ %q", os.Getenv("AUTHZ"))
 	}
 
-	relay := &outbox.Relay{DB: pool, Sync: eng, Log: log}
-	if err := enqueueSystemRoles(ctx, pool, relay); err != nil {
+	relays := outbox.Relays{{DB: pool, Sync: eng, Log: log}}
+	if idSync != nil {
+		relays = append(relays, idSync)
+	}
+	if err := enqueueSystemRoles(ctx, pool, relays[0]); err != nil {
 		return err
 	}
 
@@ -124,7 +134,7 @@ func run(log *slog.Logger) error {
 		DB:    pool,
 		Authn: &core.Authenticator{Verifier: id, DB: pool},
 		Authz: eng,
-		Relay: relay,
+		Relay: relays,
 		Log:   log,
 		Now:   time.Now,
 	}
@@ -160,7 +170,7 @@ func run(log *slog.Logger) error {
 	})
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) { core.WriteError(w, core.ErrNotFound) })
 
-	go relay.Run(ctx, time.Second)
+	relays.Run(ctx, time.Second)
 
 	srv := &http.Server{Addr: ":" + env("PORT", "8081"), Handler: mux, ReadHeaderTimeout: 10 * time.Second}
 	go func() {
