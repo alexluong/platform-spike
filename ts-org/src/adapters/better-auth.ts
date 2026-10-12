@@ -89,6 +89,13 @@ export const orgOptions = {
   membershipLimit: 1_000_000,
   invitationLimit: 1_000_000,
   invitationExpiresIn: 7 * 24 * 3600,
+  // Fires inside Better Auth's accept endpoint (the one plugin endpoint the app calls): nobody joins
+  // a suspended merchant.
+  organizationHooks: {
+    beforeAcceptInvitation: async ({ organization }: { organization: Record<string, unknown> }) => {
+      if (organization.status === 'suspended') throw new APIError('FORBIDDEN', { message: 'merchant suspended', code: 'MERCHANT_SUSPENDED' })
+    },
+  },
   schema: {
     organization: {
       additionalFields: {
@@ -175,7 +182,7 @@ export async function migrateBetterAuth(cfg: IdentityConfig) {
 }
 
 /** Statements that would open or end a transaction: never allowed on the app's tx connection. */
-const TX_CONTROL = /^\s*(begin|start\s+transaction|commit|rollback|end|savepoint|release)\b/i
+export const TX_CONTROL = /^\s*(begin|start\s+transaction|commit|rollback|end|savepoint|release)\b/i
 
 export function makeBetterAuth(cfg: IdentityConfig) {
   const auth = betterAuth(authOptions(cfg))
@@ -222,7 +229,8 @@ export function makeBetterAuth(cfg: IdentityConfig) {
     id: i.id,
     organizationId: i.organizationId,
     email: i.email,
-    status: i.status,
+    // Better Auth keeps an expired invitation "pending" (accept refuses it); report what it is
+    status: i.status === 'pending' && new Date(i.expiresAt) < new Date() ? 'expired' : i.status,
     expiresAt: new Date(i.expiresAt),
   })
 
@@ -295,6 +303,7 @@ export function makeBetterAuth(cfg: IdentityConfig) {
               const code = (e.body as { code?: string } | undefined)?.code
               if (code === 'INVITATION_NOT_FOUND') throw notFound('invitation')
               if (code === 'YOU_ARE_NOT_THE_RECIPIENT_OF_THE_INVITATION') throw forbidden('forbidden', 'not the recipient of this invitation')
+              if (code === 'MERCHANT_SUSPENDED') throw forbidden('merchant_suspended')
               throw new AppError(e.statusCode >= 400 && e.statusCode < 500 ? e.statusCode : 500, 'idp_error', e.message)
             }
             throw e
