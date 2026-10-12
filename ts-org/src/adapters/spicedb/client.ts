@@ -76,12 +76,15 @@ export async function read(c: SpiceClient, f: Filter): Promise<Rel[]> {
 
 // gRPC status codes (grpc-js is only a transitive dependency)
 const GRPC_INVALID_ARGUMENT = 3
-const GRPC_FAILED_PRECONDITION = 9
 
-/** Errors SpiceDB will repeat on every retry: the request itself is wrong (schema, arguments). */
+/** Errors SpiceDB will repeat on every retry: the request itself is malformed (InvalidArgument:
+ *  an id or relation name the API rejects). FailedPrecondition is *not* permanent: SpiceDB answers
+ *  it for "object definition / relation not found", i.e. the deployed schema isn't the one this code
+ *  generates (schema not written yet, a datastore reset, a rolling deploy). That is environment, not
+ *  the event: dead-lettering it would drop revocations (review-e; review-b 3 for OpenFGA). The relay
+ *  retries it, in order and loudly, until the schema is right. */
 export function isPermanent(err: unknown): boolean {
-  const code = (err as { code?: unknown })?.code
-  return code === GRPC_INVALID_ARGUMENT || code === GRPC_FAILED_PRECONDITION
+  return (err as { code?: unknown })?.code === GRPC_INVALID_ARGUMENT
 }
 
 /** Key of a relationship without caveat/expiry: what makes two relationships "the same tuple". */

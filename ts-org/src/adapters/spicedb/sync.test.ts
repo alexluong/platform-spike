@@ -14,12 +14,15 @@ const failingClient = (code: number) => ({ writeRelationships: async () => Promi
 describe('SpiceDB sync errors', () => {
   const tx = fakeTx([{ merchantId: 'm1' }])
 
-  it('InvalidArgument / FailedPrecondition → permanent', async () => {
-    for (const code of [3, 9]) await expect(makeSpiceDbSync(failingClient(code)).apply({ type: 'store.created', storeId: 's1' }, tx)).rejects.toBeInstanceOf(PermanentSyncError)
+  it('InvalidArgument → permanent', async () => {
+    await expect(makeSpiceDbSync(failingClient(3)).apply({ type: 'store.created', storeId: 's1' }, tx)).rejects.toBeInstanceOf(PermanentSyncError)
   })
 
-  it('Unavailable / DeadlineExceeded → transient (rethrown as is)', async () => {
-    for (const code of [14, 4]) {
+  // review-e: SpiceDB answers FailedPrecondition (9) for "object definition `x` not found" and
+  // "relation `y` not found under definition `z`" (probed against v1.56.2): schema missing or stale.
+  // Dead-lettering it dropped every event, revocations included, until someone replayed them.
+  it('Unavailable / DeadlineExceeded / FailedPrecondition (schema missing or stale) → transient (rethrown as is)', async () => {
+    for (const code of [14, 4, 9]) {
       const err = await makeSpiceDbSync(failingClient(code)).apply({ type: 'store.created', storeId: 's1' }, tx).catch((e) => e)
       expect(err).not.toBeInstanceOf(PermanentSyncError)
       expect(err.code).toBe(code)
