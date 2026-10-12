@@ -1,22 +1,22 @@
 # Conformance suite
 
-Black-box tests for `spec/SPEC.md`. The same suite runs unchanged against stacks `a`, `b` and `c`; passing it is the definition of done for a stack. TypeScript + vitest, HTTP only.
+Black-box tests for `spec/SPEC.md`. The same suite runs unchanged against stacks `a`, `b`, `c` and the round-2 stacks `d`, `e`, `a2` (SPEC §15); passing it is the definition of done for a stack. TypeScript + vitest, HTTP only.
 
 ## Run
 
 ```sh
 mise install                      # node + pnpm from the repo's mise.toml
 cd conformance && pnpm install
-STACK=a HOST=cs-ws pnpm test      # or b, c
+STACK=a HOST=cs-ws pnpm test      # or b, c, d, e, a2
 pnpm typecheck                    # tsc --noEmit
 ```
 
 | env | default | meaning |
 |---|---|---|
-| `STACK` | (required) | `a`, `b` or `c`: picks `stacks/<stack>.ts` |
+| `STACK` | (required) | `a`, `b`, `c`, `d`, `e` or `a2`: picks `stacks/<stack>.ts` |
 | `HOST` | `localhost` | host where the stack's ports are published |
 | `TEST_SECRET` | `test-secret` | sent as `X-Test-Secret` to `/api/_test/users` |
-| `APP_URL` | `http://$HOST:<port>` | override the app base URL (ports: a 8081, b 8082, c 8083) |
+| `APP_URL` | `http://$HOST:<port>` | override the app base URL (ports: a 8081, b 8082, c 8083, d 8086, e 8087, a2 8088; a2's Zitadel 8089) |
 | `SKIP_SLOW` | unset | `1` skips the break-glass expiry test (waits ~65s) |
 | `SKIP_PREFLIGHT` | unset | `1` skips the preflight (stub driver / `/healthz` check) |
 | `REQUEST_TIMEOUT_MS` | `15000` | per-request timeout |
@@ -37,8 +37,11 @@ interface StackDriver {
   baseUrl: string
   loginUser(email: string, password: string): Promise<string>         // bearer token for /api
   loginClient(clientId: string, clientSecret: string): Promise<string> // apps and agents
+  features?: string[]                                                  // opt-in test groups
 }
 ```
+
+`features: ['idp-tenancy']` (stacks `d`, `e`, `a2`) turns on `tests/idp-tenancy.test.ts`; without it that file is skipped. The `d`/`e` drivers start as copies of `c`, `a2` as a copy of `a` (ports changed); each builder adapts them to the stack's real login path. On these stacks `loginUser`/`loginClient` must reject when the IdP refuses a suspended merchant's people (SPEC §15.3).
 
 - Use the stack's **real** headless login path (the TODO in each stub names it). No shortcuts through the app.
 - Add any IdP URLs the driver needs as exported constants with env overrides and defaults matching the ports the stack's compose file publishes (placeholders are in the stubs; fix them).
@@ -61,7 +64,7 @@ src/world.ts         fixtures through the real API: newUser/newCustomer/newSuppo
 src/catalog.ts       SPEC §3/§4 as data (system roles, store/merchant-scope actions)
 src/types.ts         response shapes
 src/global-setup.ts  preflight
-stacks/{a,b,c}.ts    drivers (stubs until each builder implements them)
+stacks/<stack>.ts    drivers: a, b, c; d, e, a2 (round 2, starting points)
 tests/*.test.ts      the suite
 AMBIGUITIES.md       spec readings the suite encodes where SPEC.md is unclear
 ```
@@ -80,6 +83,7 @@ AMBIGUITIES.md       spec readings the suite encodes where SPEC.md is unclear
 | `orders.test.ts` | 28 | prices from products (client prices ignored, snapshot at order time); invalid items; product update; full pending→paid→fulfilling→delivered; cancel rules; capture rules; partial refunds; `over_refund`; refund needs `paid`; shipment rules and `invalid_transition`; 403 (not 409) for forbidden callers, cross-tenant callers, and over-limit refunds; `qty` ≤ 1 000 000 |
 | `apps.test.ts` | 21 | register (platform_admin only); each forbidden scope → `not_grantable_to_apps`; install with scopes ⊆ requested; installer must hold scopes at that store (`escalation`); app token does exactly its scopes on its store, nothing on other stores or merchant actions; `/api/me/permissions`; uninstall cuts access; one app on two merchants; `scope_not_requested`; unknown `appId` → 404 |
 | `agents.test.ts` | 20 | register (merchant users only); grant subset of own permissions (`escalation` otherwise); store-bound; `/api/me/permissions`; revoke; expiry (2s grant, waits 3.5s); independent grants per store; granting user's role removal / permission removal / membership removal cuts the agent off; refunds use the granting user's limit, live; `not_grantable` before the registrant rule |
+| `idp-tenancy.test.ts` | 28 | `idp-tenancy` stacks only (SPEC §15.2, §15.3): invitations create/list/cancel, `member.manage` required, other merchants 403\|404, invitee not a member until accept (assign 4xx, no `merchantId`), accept (case-insensitive email, no roles, then roles per §3), wrong user 403\|404, cancelled/accepted 404\|409, already a member 409, 401 without token; suspension: users and agents can't log in, earlier tokens 403 `merchant_suspended`, reinstate restores login, platform staff/customers/apps/other merchants unaffected |
 | `permissions.test.ts` | 11 | exact `/api/me/permissions` sets for a custom role at store vs merchant scope (both query forms), union, live edit, customer and platform admin get `[]`, missing query → 400 |
 
-Total: 362.
+Total: 362 on every stack, plus 28 on `idp-tenancy` stacks.
