@@ -9,6 +9,7 @@ import { appUsers, audit, breakGlass, roleAssignments } from '../db/schema.js'
 import { defineAction } from '../kernel/action.js'
 import { conflict, invalid, notFound } from '../kernel/errors.js'
 import { merchantResource, platformResource } from './lookup.js'
+import { lockMembership } from './merchants.js'
 
 const merchantOut = (m: typeof merchants.$inferSelect) => ({ id: m.id, name: m.name, status: m.status ?? 'active' })
 
@@ -22,6 +23,7 @@ export function platformActions() {
     async run({ tx, idp, emit }, input) {
       const [owner] = await tx.select().from(appUsers).where(eq(appUsers.id, input.ownerUserId))
       if (!owner || owner.kind !== 'user') throw invalid('invalid_input', 'ownerUserId must be a merchant user')
+      await lockMembership(tx, owner.id)
       const [existing] = await tx.select().from(member).where(eq(member.userId, owner.id))
       if (existing) throw conflict('already_member', 'user already belongs to a merchant')
       const id = newId('m')

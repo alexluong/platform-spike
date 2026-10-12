@@ -81,6 +81,23 @@ async function orgSuspended(db: FindOne, organizationId: string) {
   return o?.status === 'suspended'
 }
 
+/** The client a token request authenticates as: `Authorization: Basic` (client_secret_basic, which
+ *  the provider reads first) or the body's `client_id` (client_secret_post). */
+export function tokenRequestClientId(body: Record<string, unknown>, authorization: string | null | undefined): string | undefined {
+  const m = /^Basic\s+(\S+)$/i.exec(authorization ?? '')
+  if (m) {
+    const dec = Buffer.from(m[1]!, 'base64').toString('utf8')
+    const at = dec.indexOf(':')
+    const id = at >= 0 ? dec.slice(0, at) : dec
+    try {
+      return decodeURIComponent(id.replace(/\+/g, ' '))
+    } catch {
+      return id
+    }
+  }
+  return typeof body.client_id === 'string' ? body.client_id : undefined
+}
+
 export const orgOptions = {
   // Nobody creates organizations or invites through Better Auth's own routes (none are mounted);
   // the app does it through the organization adapter, after its own authorization (§3 member.manage).
@@ -148,10 +165,12 @@ export function authOptions(cfg: IdentityConfig) {
     hooks: {
       before: createAuthMiddleware(async (ctx) => {
         if (ctx.path !== '/oauth2/token') return
-        const body = (ctx.body ?? {}) as Record<string, unknown>
-        if (body.grant_type !== 'client_credentials' || typeof body.client_id !== 'string') return
+        // Every grant, and both client auth methods: a client registered for client_secret_basic
+        // (the provider's default when the method is omitted) sends its id in the header only.
+        const clientId = tokenRequestClientId((ctx.body ?? {}) as Record<string, unknown>, ctx.headers?.get('authorization'))
+        if (!clientId) return
         const db = (await getCurrentAdapter(ctx.context.adapter)) as unknown as FindOne
-        const client = await db.findOne<{ referenceId?: string | null }>({ model: 'oauthClient', where: [{ field: 'clientId', value: body.client_id }] })
+        const client = await db.findOne<{ referenceId?: string | null }>({ model: 'oauthClient', where: [{ field: 'clientId', value: clientId }] })
         if (client?.referenceId && (await orgSuspended(db, client.referenceId))) {
           throw new APIError('BAD_REQUEST', { error: 'invalid_client', error_description: 'the owning organization is suspended' })
         }
