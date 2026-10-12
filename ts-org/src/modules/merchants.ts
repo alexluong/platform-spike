@@ -2,7 +2,7 @@
 // invitations are the IdP's records (organization plugin): read here in SQL, written through the
 // tenancy port inside the action's transaction. Who may change them stays an app decision (§3
 // member.manage through can()); the IdP's own role checks are not used.
-import { and, eq } from 'drizzle-orm'
+import { and, eq, sql } from 'drizzle-orm'
 import { z } from 'zod'
 import type { Queryable } from '../db/client.js'
 import { member, organization as merchants } from '../db/idp-tables.js'
@@ -23,6 +23,15 @@ export async function merchantCheck(db: Queryable, p: Principal, merchantId: str
   const [m] = await db.select({ id: merchants.id }).from(merchants).where(eq(merchants.id, merchantId))
   if (!m) throw notFound('merchant')
   return merchantResource(m.id)
+}
+
+/** Serialize membership writes for one user (invitation accept, direct add, merchant create) until
+ *  the transaction ends, so the "already a member?" check below sees a concurrent join (READ
+ *  COMMITTED: the next statement after the wait sees the other commit). Without it two joins race to
+ *  the unique index on member(userId); inside Better Auth's accept that violation aborts our
+ *  transaction, its compensating update then fails (25P02), and the caller got a 500, not 409. */
+export async function lockMembership(tx: Queryable, userId: string) {
+  await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`member:${userId}`}, 0))`)
 }
 
 const invitationOut = (i: InvitationRecord) => ({ id: i.id, email: i.email, status: i.status, expiresAt: i.expiresAt.toISOString() })
@@ -48,6 +57,7 @@ export function merchantActions() {
     async run({ tx, idp, emit }, i) {
       const [u] = await tx.select().from(appUsers).where(eq(appUsers.id, i.userId))
       if (!u || u.kind !== 'user') throw invalid('invalid_input', 'userId must be a merchant user')
+      await lockMembership(tx, u.id)
       const [existing] = await tx.select({ id: member.id }).from(member).where(eq(member.userId, u.id))
       if (existing) throw conflict('already_member', 'user already belongs to a merchant')
       await idp.addMember(i.merchantId, u.id) // the unique index on member(userId) closes the race
@@ -133,6 +143,7 @@ export function merchantActions() {
     input: z.object({ invitationId: z.string() }),
     authorize: async () => null,
     async run({ tx, idp, principal, emit }, i) {
+      await lockMembership(tx, principal.id)
       const [existing] = await tx.select({ id: member.id }).from(member).where(eq(member.userId, principal.id))
       if (existing) throw conflict('already_member', 'user already belongs to a merchant')
       const { organizationId } = await idp.acceptInvitation(i.invitationId, principal.credential)
