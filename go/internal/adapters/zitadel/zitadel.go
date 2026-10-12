@@ -67,10 +67,11 @@ func (c *Client) DriverConfig() map[string]any {
 
 // accessClaims are the claims Verify reads beyond go-oidc's checks.
 type accessClaims struct {
-	ClientID string `json:"client_id"` // Zitadel access tokens name the client that got them
-	Azp      string `json:"azp"`
-	Nonce    string `json:"nonce"`
-	AtHash   string `json:"at_hash"`
+	ClientID string   `json:"client_id"` // Zitadel access tokens name the client that got them
+	Azp      string   `json:"azp"`
+	Nonce    string   `json:"nonce"`
+	AtHash   string   `json:"at_hash"`
+	Amr      []string `json:"amr"`
 	// Organizations mode: the merchant org that granted the member role, and the user's org.
 	Roles         map[string]map[string]string `json:"urn:zitadel:iam:org:project:roles"`
 	ResourceOwner string                       `json:"urn:zitadel:iam:user:resourceowner:id"`
@@ -78,7 +79,8 @@ type accessClaims struct {
 
 // Verify checks a bearer token (SPEC §14 P7): signature with an RS256-only allowlist,
 // iss, aud (the project), exp (go-oidc); an access token, not an ID token (Zitadel's
-// access tokens carry client_id and never at_hash/nonce); and the client that obtained it
+// access tokens carry client_id and none of the ID-token claims at_hash, nonce, azp, amr;
+// both have typ "JWT", so the header can't tell them apart); and the client that obtained it
 // is one the API allows: the login app (users), or a machine user itself (apps, agents:
 // client_credentials tokens name the machine's username as client_id; the app checks the
 // subject maps to one of its apps or agents).
@@ -91,7 +93,7 @@ func (c *Client) Verify(ctx context.Context, bearer string) (identity.Token, err
 	if err := tok.Claims(&cl); err != nil {
 		return identity.Token{}, fmt.Errorf("%w: claims: %v", identity.ErrInvalidToken, err)
 	}
-	if cl.ClientID == "" || cl.AtHash != "" || cl.Nonce != "" {
+	if cl.ClientID == "" || cl.AtHash != "" || cl.Nonce != "" || cl.Azp != "" || len(cl.Amr) > 0 {
 		return identity.Token{}, fmt.Errorf("%w: not an access token", identity.ErrInvalidToken)
 	}
 	if cl.ClientID != c.cfg.ClientID && !c.machineClient(cl.ClientID, tok.Subject) {
