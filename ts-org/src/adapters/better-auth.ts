@@ -11,7 +11,7 @@
 // storage (it writes through `ctx.context.adapter`), so client creation stays outside (see createClient).
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { randomBytes, timingSafeEqual } from 'node:crypto'
-import { getCurrentDBAdapterAsyncLocalStorage } from '@better-auth/core/context'
+import { getCurrentAdapter, getCurrentDBAdapterAsyncLocalStorage } from '@better-auth/core/context'
 import { kyselyAdapter } from '@better-auth/kysely-adapter'
 import { oauthProvider } from '@better-auth/oauth-provider'
 import { betterAuth, type BetterAuthOptions } from 'better-auth'
@@ -124,7 +124,11 @@ export function authOptions(cfg: IdentityConfig) {
         create: {
           before: async (session: { userId: string }, ctx: { context: { adapter: unknown } } | null) => {
             if (!ctx) return
-            if (await userSuspended(ctx.context.adapter as FindOne, session.userId)) {
+            // getCurrentAdapter, not ctx.context.adapter: sign-up creates the session inside Better
+            // Auth's own transaction; the base adapter would take a second connection from the same
+            // pool while that one is held (the §1 deadlock, inside the IdP).
+            const db = (await getCurrentAdapter(ctx.context.adapter as never)) as unknown as FindOne
+            if (await userSuspended(db, session.userId)) {
               throw new APIError('FORBIDDEN', { message: 'merchant suspended', code: 'MERCHANT_SUSPENDED' })
             }
           },
@@ -139,7 +143,7 @@ export function authOptions(cfg: IdentityConfig) {
         if (ctx.path !== '/oauth2/token') return
         const body = (ctx.body ?? {}) as Record<string, unknown>
         if (body.grant_type !== 'client_credentials' || typeof body.client_id !== 'string') return
-        const db = ctx.context.adapter as unknown as FindOne
+        const db = (await getCurrentAdapter(ctx.context.adapter)) as unknown as FindOne
         const client = await db.findOne<{ referenceId?: string | null }>({ model: 'oauthClient', where: [{ field: 'clientId', value: body.client_id }] })
         if (client?.referenceId && (await orgSuspended(db, client.referenceId))) {
           throw new APIError('BAD_REQUEST', { error: 'invalid_client', error_description: 'the owning organization is suspended' })
