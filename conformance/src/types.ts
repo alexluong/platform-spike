@@ -24,5 +24,6 @@ export interface Install { id: string; appId: string; storeId: string; scopes: s
 export interface Grant { id: string; expiresAt: string }
 export interface BreakGlass { id: string; expiresAt: string }
 export interface AuditEntry { actor: string; action: string; merchantId: string; at: string }
+export interface Invitation { id: string; email: string; status: string }
 export interface Me { id: string; kind: Kind; merchantId?: string | null }
 export interface Items<T> { items: T[] }

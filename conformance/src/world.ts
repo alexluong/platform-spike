@@ -8,6 +8,7 @@ import type {
   BreakGlass,
   ClientCreds,
   Grant,
+  Invitation,
   Install,
   Merchant,
   Order,
@@ -61,6 +62,11 @@ export async function newUser(kind: Actor['kind'], opts: { platformRole?: Platfo
   const u = ok(await anon.post<{ id: string; email: string }>('/api/_test/users', body, { 'x-test-secret': env.testSecret }), 201)
   const token = await driver.loginUser(email, password)
   return { id: String(u.id), email, password, kind, token, api: anon.as(token, label) }
+}
+
+/** Log `who` in again with its password (fresh token; the driver throws when the IdP refuses). */
+export function relogin(who: Pick<Actor, 'email' | 'password'>): Promise<string> {
+  return driver.loginUser(who.email, who.password)
 }
 
 let adminP: Promise<Actor> | undefined
@@ -146,6 +152,11 @@ export class MerchantWorld {
     const u = await newUser('user', { label })
     ok(await this.owner.api.post(`/api/merchants/${this.id}/members`, { userId: u.id }), 201)
     return u
+  }
+
+  /** Invite `email` (SPEC §15.2; `idp-tenancy` stacks only). */
+  async invite(email: string, by: Actor = this.owner): Promise<Invitation> {
+    return ok(await by.api.post<Invitation>(`/api/merchants/${this.id}/invitations`, { email }), 201)
   }
 
   async role(permissions: string[], refundLimitCents?: number, by: Actor = this.owner): Promise<Role> {
