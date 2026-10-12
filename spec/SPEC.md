@@ -7,6 +7,11 @@ A mini Shopify, built three times on different identity + authorization stacks, 
 | `a` | Go | Zitadel (OIDC) | SpiceDB | 8081 |
 | `b` | Go (same app as `a`, other adapters) | Ory Kratos + Hydra (OIDC) | OpenFGA | 8082 |
 | `c` | TypeScript (Hono) | Better Auth (in the app) | Cerbos | 8083 |
+| `d` | TypeScript (from `c`) | Better Auth + organization plugin | Cerbos | 8086 |
+| `e` | TypeScript (same app as `d`, other authz adapter) | Better Auth + organization plugin | SpiceDB | 8087 |
+| `a2` | Go (from `a`) | Zitadel, one organization per merchant | SpiceDB | 8088 |
+
+Stacks `d`, `e` and `a2` are round 2 (§15): the identity provider owns the merchant's identity side.
 
 Stacks `a` and `b` are **one Go codebase**. Switching between them must be configuration plus adapters only; no module code may know which identity provider or authorization engine is behind it. How much had to change for `b` is one of the spike's results.
 
@@ -363,7 +368,66 @@ Each one would change the suite or a stack. None is in force until it moves into
 | P7 | **Token checks are named:** signature with an algorithm allowlist, `iss`, `aud`, `exp`, token type (an access token, never an ID token; `typ: at+jwt` where the IdP sets it, otherwise introspection), and the client (`azp`) is one the API allows. | review-a 8: `a` verifies access tokens with go-oidc's ID-token verifier. ID tokens pass as access tokens, and any client allowed the project audience mints tokens the API accepts. Not exploitable here (only known subjects map to principals); a confused-deputy risk with third-party clients. |
 | P8 | **Adding an unaffiliated user as a member needs their consent** (invite → accept). `POST /members` creates an invitation; the user joins on accept. | review-c 16: `POST /members` claims any user id without consent; that user then can't join the merchant they meant to (409 `already_member`). |
 
-## 15. Changelog
+## 15. Round 2: identity-owned tenancy (`d`, `e`, `a2`)
+
+**Question.** If the identity provider owns tenancy (organizations, members, invitations, login policy), does the spec get cleaner, and what does it push back into the app? Round 1 used every IdP as a plain login server, so this was never measured.
+
+| stack | built from | what it tests |
+|---|---|---|
+| `d` | `c` | Better Auth's organization plugin instead of the app's own merchants/members; Cerbos unchanged |
+| `e` | `d` | the same app with SpiceDB instead of Cerbos: the engine swap by adapter only, in TS (as `a` → `b` was in Go); TS vs Go on SpiceDB (`e` vs `a`) |
+| `a2` | `a` | Zitadel organizations per merchant instead of one shared org |
+
+Everything in §1–§11 still holds: **the full suite must pass** on `d`, `e` and `a2`, plus the tests below. Ports: app as in the table at the top; `a2`'s Zitadel on 8089; `e` runs its own SpiceDB. Compose profiles `d`, `e`, `a2`; projects `ps-d`, `ps-e`, `ps-a2`.
+
+### 15.1 Who owns what
+
+- **The IdP owns the merchant's identity side:** one organization per merchant, created with the merchant; membership (users in the organization); invitations; login policy (a suspended merchant's people can't log in, §15.3).
+- **Authorization stays as in §3–§7:** roles, assignments, store scope, refund limits and guardrails, decided through `can()`, with the engine fed per §1. Using the IdP's own role features (Better Auth dynamic access control, Zitadel project roles and grants) is allowed only where every §3 rule still holds. A role kept in two places (IdP and app/engine) is a finding: record which you chose and why.
+- **§2 "membership comes from the app DB, never from token claims" becomes:** membership comes from the IdP's organization membership (Better Auth: its tables, in the same Postgres; Zitadel: the organization). The "next request" rules still hold: a removed member loses access on the next request, even with a token issued earlier. A token's organization claim may be an extra tenant check, never the only one.
+- **Writes that span the app and the IdP** (merchant create → organization, member add/remove, suspend/reinstate, agent registration) follow the §1 operational rules: no dual write without a recovery story. If the IdP's writes can't join the app's transaction, either sync through the outbox (the IdP as a second consumer, with the same retry and classification rules) or make the IdP the single writer and derive app state from it. Record the failure window either way.
+- One user belongs to at most one merchant (unchanged). Platform staff and customers belong to no merchant organization (Zitadel: a separate platform organization is fine).
+- `POST /api/merchants/:mid/members {userId}` stays: the suite's helpers use it. In `d`/`e`/`a2` it adds the user to the organization directly.
+
+### 15.2 Invitations (tested, `idp-tenancy` only; §14 P8)
+
+| method | path | action | body → response |
+|---|---|---|---|
+| POST | `/api/merchants/:mid/invitations` | `member.manage` | `{email}` → `201 {id, email, status: "pending"}` |
+| GET | `/api/merchants/:mid/invitations` | `member.manage` | → `{items: [{id, email, status}]}` |
+| DELETE | `/api/merchants/:mid/invitations/:iid` | `member.manage` | → `204` (cancelled) |
+| POST | `/api/invitations/:iid/accept` | the invited user | → `200 {merchantId}`: the caller becomes a member with no roles |
+
+- The invitee is an existing user (created through `/api/_test/users`); the email matches case-insensitively.
+- Until acceptance the invitee is not a member: assigning them a role → 400 `not_member` (suite: any 4xx but 401), and their `GET /api/me` has no `merchantId`.
+- Accepting as another user (email mismatch) → 403/404. Accepting a cancelled or already accepted invitation → 404/409. A user who already belongs to a merchant accepting → 409 `already_member` (suite: 409).
+- Another merchant's `member.manage` holder can't list, cancel or see an invitation → 403/404. A member without `member.manage` → 403.
+- After acceptance the new member's roles follow §3 like any member (assign → access on the next request).
+
+### 15.3 Suspension at the IdP (tested, `idp-tenancy` only)
+
+- While a merchant is suspended, **its users can't log in**: the driver's `loginUser` rejects because the IdP refuses (not the app). **Its agents can't get tokens**: `loginClient` rejects.
+- Tokens issued before the suspension still get 403 `merchant_suspended` (§7, unchanged).
+- Reinstating restores login for both.
+- Platform staff, customers and apps (platform-level, not owned by a merchant) are unaffected; another merchant's users are unaffected.
+
+### 15.4 Tests
+
+`conformance/tests/idp-tenancy.test.ts` runs only when the stack's driver declares `features: ['idp-tenancy']` (optional `StackDriver.features`). Stacks `a`, `b`, `c` skip it.
+
+### 15.5 Results to record (in addition to §12)
+
+- What the IdP's organization features replaced (code removed vs the parent stack) and what they pushed back into the app (sync, hooks, cross-system writes).
+- Custom roles: did the IdP's role feature carry any of §3? Why or why not.
+- The cross-system write story: which writes, how they recover, the failure window.
+- `d` → `e`: what changed outside the authz adapter and the composition root (anything else is a finding). `e` vs `a`: TS vs Go on the same engine.
+- `a2` vs `a`: what changed in modules (expected: merchant/member/agent lifecycle), and what Zitadel's organizations gave that Ory OSS can't.
+
+## 16. Changelog
+
+### v3 (2026-10-13): round 2
+
+- §15: stacks `d`, `e`, `a2` (identity-owned tenancy), invitations, suspension at the IdP, opt-in `idp-tenancy` tests.
 
 ### v2 (2026-10-11): stacks aligned
 
