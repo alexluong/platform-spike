@@ -1,7 +1,9 @@
 // Stack d: TypeScript (Hono) app, built from c: Better Auth + organization plugin + Cerbos. SPEC §10, §15.
-// STARTING POINT: a copy of stacks/c.ts (Better Auth email/password sign-in with the bearer plugin;
-// OAuth provider client_credentials for apps/agents) with the port changed. The stack's builder
-// adjusts it to the real login path (e.g. if the organization plugin changes sign-in or tokens).
+// Login path is c's (the organization plugin changes neither sign-in nor tokens): users sign in with
+// email/password and get the session token from `set-auth-token` (bearer plugin); apps/agents use the
+// OAuth provider's client_credentials grant. Suspension (§15.3) is enforced inside Better Auth: a
+// session.create hook refuses members of a suspended organization (403 on sign-in) and a hook on
+// /oauth2/token refuses clients owned by one (400 invalid_client); both make these calls throw.
 // features: ['idp-tenancy'] opts into tests/idp-tenancy.test.ts (SPEC §15.2, §15.3).
 import type { StackDriver } from '../src/driver'
 import { env } from '../src/env'

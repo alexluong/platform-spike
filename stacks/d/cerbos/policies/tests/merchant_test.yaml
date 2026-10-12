@@ -1,0 +1,102 @@
+name: MerchantTests
+description: merchant-scope checks, owner-only, suspension, break-glass, platform roles
+options:
+  now: "2026-10-11T12:00:00Z"
+principals:
+  owner:
+    id: u1
+    roles: ["user"]
+    attr:
+      merchantId: m1
+      access: { owner: true, merchantPerms: ["merchant.view", "role.manage", "order.refund", "store.create"], merchantRefundLimits: [-1], stores: {} }
+  admin:
+    id: u2
+    roles: ["user"]
+    attr:
+      merchantId: m1
+      access: { owner: false, merchantPerms: ["merchant.view", "role.manage"], merchantRefundLimits: [], stores: {} }
+  limited:
+    id: u3
+    roles: ["user"]
+    attr:
+      merchantId: m1
+      access: { owner: false, merchantPerms: ["order.refund"], merchantRefundLimits: [500], stores: { s1: { perms: ["merchant.view"], refundLimits: [] } } }
+  outsider:
+    id: u4
+    roles: ["user"]
+    attr: { merchantId: "", access: { owner: false, merchantPerms: [], merchantRefundLimits: [], stores: {} } }
+  padmin:
+    id: p1
+    roles: ["platform_admin"]
+    attr: { breakGlass: {} }
+  support_bg:
+    id: p2
+    roles: ["support"]
+    attr: { breakGlass: { m1: "2026-10-11T12:05:00Z" } }
+resources:
+  m1:
+    kind: merchant
+    id: m1
+    attr: { merchantId: m1, status: active }
+  m1_suspended:
+    kind: merchant
+    id: m1
+    attr: { merchantId: m1, status: suspended }
+  m1_limit_400:
+    kind: merchant
+    id: m1
+    attr: { merchantId: m1, status: active, amountCents: 400 }
+  m1_limit_unlimited:
+    kind: merchant
+    id: m1
+    attr: { merchantId: m1, status: active, amountCents: 9007199254740991 }
+  platform:
+    kind: platform
+    id: platform
+tests:
+  - name: merchant-scope perms; store-scope perms do not count at merchant scope
+    input:
+      principals: [owner, admin, limited, outsider]
+      resources: [m1]
+      actions: ["merchant.view", "role.manage", "role.manage_owner", "agent.register"]
+    expected:
+      - { principal: owner, resource: m1, actions: { merchant.view: EFFECT_ALLOW, role.manage: EFFECT_ALLOW, role.manage_owner: EFFECT_ALLOW, agent.register: EFFECT_ALLOW } }
+      - { principal: admin, resource: m1, actions: { merchant.view: EFFECT_ALLOW, role.manage: EFFECT_ALLOW, role.manage_owner: EFFECT_DENY, agent.register: EFFECT_ALLOW } }
+      - { principal: limited, resource: m1, actions: { merchant.view: EFFECT_DENY, role.manage: EFFECT_DENY, role.manage_owner: EFFECT_DENY, agent.register: EFFECT_ALLOW } }
+      - { principal: outsider, resource: m1, actions: { merchant.view: EFFECT_DENY, role.manage: EFFECT_DENY, role.manage_owner: EFFECT_DENY, agent.register: EFFECT_DENY } }
+  - name: refund-limit guardrail (caller limit >= role limit)
+    input:
+      principals: [owner, limited]
+      resources: [m1_limit_400, m1_limit_unlimited]
+      actions: ["order.refund"]
+    expected:
+      - { principal: owner, resource: m1_limit_400, actions: { order.refund: EFFECT_ALLOW } }
+      - { principal: owner, resource: m1_limit_unlimited, actions: { order.refund: EFFECT_ALLOW } }
+      - { principal: limited, resource: m1_limit_400, actions: { order.refund: EFFECT_ALLOW } }
+      - { principal: limited, resource: m1_limit_unlimited, actions: { order.refund: EFFECT_DENY } }
+  - name: suspended merchant denies its users
+    input:
+      principals: [owner]
+      resources: [m1_suspended]
+      actions: ["merchant.view", "agent.register"]
+    expected:
+      - { principal: owner, resource: m1_suspended, actions: { merchant.view: EFFECT_DENY, agent.register: EFFECT_DENY } }
+  - name: platform staff need break-glass for merchant data
+    input:
+      principals: [padmin, support_bg]
+      resources: [m1, m1_suspended]
+      actions: ["merchant.view", "role.manage", "platform.break_glass"]
+    expected:
+      - { principal: padmin, resource: m1, actions: { merchant.view: EFFECT_DENY, role.manage: EFFECT_DENY, platform.break_glass: EFFECT_ALLOW } }
+      - { principal: support_bg, resource: m1, actions: { merchant.view: EFFECT_ALLOW, role.manage: EFFECT_DENY, platform.break_glass: EFFECT_ALLOW } }
+      - { principal: padmin, resource: m1_suspended, actions: { merchant.view: EFFECT_DENY, role.manage: EFFECT_DENY, platform.break_glass: EFFECT_ALLOW } }
+      - { principal: support_bg, resource: m1_suspended, actions: { merchant.view: EFFECT_ALLOW, role.manage: EFFECT_DENY, platform.break_glass: EFFECT_ALLOW } }
+  - name: platform roles
+    input:
+      principals: [padmin, support_bg, owner]
+      resources: [platform]
+      actions: ["platform.merchant.create", "platform.merchant.view", "platform.audit.view", "platform.app.register"]
+    expected:
+      - { principal: padmin, resource: platform, actions: { platform.merchant.create: EFFECT_ALLOW, platform.merchant.view: EFFECT_ALLOW, platform.audit.view: EFFECT_ALLOW, platform.app.register: EFFECT_ALLOW } }
+      - { principal: support_bg, resource: platform, actions: { platform.merchant.create: EFFECT_DENY, platform.merchant.view: EFFECT_ALLOW, platform.audit.view: EFFECT_DENY, platform.app.register: EFFECT_DENY } }
+      - { principal: owner, resource: platform, actions: { platform.merchant.create: EFFECT_DENY, platform.merchant.view: EFFECT_DENY, platform.audit.view: EFFECT_DENY, platform.app.register: EFFECT_DENY } }
