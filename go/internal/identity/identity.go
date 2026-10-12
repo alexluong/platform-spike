@@ -14,6 +14,10 @@ var ErrInvalidToken = errors.New("invalid token")
 // Token is what a valid bearer token tells us. The app maps Subject to its own principal.
 type Token struct {
 	Subject string
+	// MerchantID is the tenant the IdP put in the token (an organization claim), when it
+	// carries one. An extra tenant check only: membership still comes from the app's records
+	// (SPEC §2, §15.1). Empty for IdPs without tenancy and for tokens without the claim.
+	MerchantID string
 }
 
 // Verifier validates bearer tokens.
@@ -31,7 +35,12 @@ type Client struct {
 // Provisioner creates identities in the IdP.
 type Provisioner interface {
 	// CreateUser creates a password user (test mode only) and returns its subject.
-	CreateUser(ctx context.Context, email, password string) (subject string, err error)
-	// CreateClient creates a machine client for an app or agent.
-	CreateClient(ctx context.Context, name string) (Client, error)
+	// kind is the principal kind (platform | user | customer): IdPs with tenancy place
+	// the identity by it (platform staff, customers and merchant users live apart).
+	CreateUser(ctx context.Context, email, password, kind string) (subject string, err error)
+	// CreateClient creates a machine client for an app (merchantID "") or an agent of
+	// merchantID. IdPs with tenancy create an agent's client inside the merchant's tenant
+	// and may keep it disabled until the agent.registered outbox event is applied (so a
+	// rolled-back registration leaves no usable credential).
+	CreateClient(ctx context.Context, name, merchantID string) (Client, error)
 }

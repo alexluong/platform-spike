@@ -1,4 +1,4 @@
-// Package merchants: merchant view and membership. SPEC §9 Merchant.
+// Package merchants: merchant view, membership and invitations. SPEC §9 Merchant, §15.2.
 package merchants
 
 import (
@@ -19,11 +19,11 @@ func merchantTarget(ctx context.Context, r *core.Req) (core.Target, error) {
 }
 
 func (m *Module) Ops() []core.Op {
-	return []core.Op{
+	return append([]core.Op{
 		{Action: "merchant.view", Method: "GET", Path: "/api/merchants/{mid}", Target: merchantTarget, Run: m.get},
 		{Action: "member.manage", Method: "POST", Path: "/api/merchants/{mid}/members", Status: 201, Target: merchantTarget, Run: m.addMember},
 		{Action: "member.manage", Method: "DELETE", Path: "/api/merchants/{mid}/members/{uid}", Status: 204, Target: merchantTarget, Run: m.removeMember},
-	}
+	}, m.invitationOps()...)
 }
 
 func (m *Module) get(ctx context.Context, r *core.Req) (any, error) {
@@ -45,9 +45,9 @@ func (m *Module) addMember(ctx context.Context, r *core.Req) (any, error) {
 		return nil, core.BadInput("userId is required")
 	}
 	mid := r.Path("mid")
-	var kind string
+	var kind, subject string
 	var current *string
-	err := r.Tx.QueryRow(ctx, `SELECT kind, merchant_id FROM users WHERE id=$1 FOR UPDATE`, in.UserID).Scan(&kind, &current)
+	err := r.Tx.QueryRow(ctx, `SELECT kind, merchant_id, idp_subject FROM users WHERE id=$1 FOR UPDATE`, in.UserID).Scan(&kind, &current, &subject)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, core.ErrNotFound
 	} else if err != nil {
@@ -62,13 +62,17 @@ func (m *Module) addMember(ctx context.Context, r *core.Req) (any, error) {
 	if _, err := r.Tx.Exec(ctx, `UPDATE users SET merchant_id=$2 WHERE id=$1`, in.UserID, mid); err != nil {
 		return nil, err
 	}
+	if err := r.Emit(ctx, authz.Event{Type: authz.EvMemberAdded, MerchantID: mid, UserID: in.UserID, Subject: subject}); err != nil {
+		return nil, err
+	}
 	return map[string]any{"userId": in.UserID, "merchantId": mid}, nil
 }
 
 func (m *Module) removeMember(ctx context.Context, r *core.Req) (any, error) {
 	mid, uid := r.Path("mid"), r.Path("uid")
 	var current *string
-	err := r.Tx.QueryRow(ctx, `SELECT merchant_id FROM users WHERE id=$1 FOR UPDATE`, uid).Scan(&current)
+	var subject string
+	err := r.Tx.QueryRow(ctx, `SELECT merchant_id, idp_subject FROM users WHERE id=$1 FOR UPDATE`, uid).Scan(&current, &subject)
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		return nil, err
 	}
@@ -124,5 +128,5 @@ func (m *Module) removeMember(ctx context.Context, r *core.Req) (any, error) {
 	if _, err := r.Tx.Exec(ctx, `UPDATE users SET merchant_id=NULL WHERE id=$1`, uid); err != nil {
 		return nil, err
 	}
-	return nil, nil
+	return nil, r.Emit(ctx, authz.Event{Type: authz.EvMemberRemoved, MerchantID: mid, UserID: uid, Subject: subject})
 }

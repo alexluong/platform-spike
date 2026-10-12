@@ -85,8 +85,8 @@ func run(log *slog.Logger) error {
 	}
 
 	var out any
-	switch env("IDP", "zitadel") {
-	case "zitadel":
+	switch idp := env("IDP", "zitadel"); idp {
+	case "zitadel", "zitadel-orgs":
 		issuer := env("ZITADEL_ISSUER", "http://cs-ws.lab.alexluong.com:8085")
 		cfg, err := zitadel.Bootstrap(ctx, log, zitadel.BootstrapInput{
 			Issuer:       issuer,
@@ -96,6 +96,7 @@ func run(log *slog.Logger) error {
 			AppName:      "conformance-driver",
 			RedirectURI:  env("DRIVER_REDIRECT_URI", "http://localhost:3999/callback"),
 			LoginBaseURI: issuer + "/ui/v2/login/",
+			Orgs:         idp == "zitadel-orgs",
 		})
 		if err != nil {
 			return err

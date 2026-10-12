@@ -1,0 +1,144 @@
+# Stack a2: Go app (from a) + Zitadel with one organization per merchant + SpiceDB. SPEC §11, §15.
+#   DOCKER_HOST=ssh://cs-ws docker compose -p ps-a2 --profile a2 up -d --build
+# Published: app 8088, Zitadel 8089 (issuer http://${STACK_A2_HOST:-cs-ws.lab.alexluong.com}:8089).
+# Same layout as stacks/a (one Postgres, own Zitadel instance, own SpiceDB); the differences:
+#   IDP=zitadel-orgs (organizations per merchant, identity sync as a second outbox consumer),
+#   app on PORT 8088, Zitadel on 8089 with its own external-domain network alias.
+# STACK_A2_HOST must be the name clients resolve the docker host by; changing it needs `down -v`.
+# Dev-only secrets below are generated placeholders for a local stack.
+
+x-a2-pg-dsn: &a2pgpass postgres-a2-dev-pw
+
+services:
+  a2-postgres:
+    profiles: [a2]
+    build: ./postgres
+    command: ["postgres", "-c", "track_commit_timestamp=on", "-c", "max_connections=200"]
+    environment:
+      POSTGRES_PASSWORD: *a2pgpass
+    volumes: [a2-pg:/var/lib/postgresql/data]
+    networks: [a2-net]
+    mem_limit: 512m
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d app"]
+      interval: 3s
+      timeout: 5s
+      retries: 30
+
+  a2-zitadel:
+    profiles: [a2]
+    image: ghcr.io/zitadel/zitadel:v4.19.4
+    user: "0"
+    command: start-from-init --masterkey "MasterkeyNeedsToHave32Characters" --tlsMode disabled
+    environment:
+      ZITADEL_PORT: "8089"
+      ZITADEL_EXTERNALDOMAIN: ${STACK_A2_HOST:-cs-ws.lab.alexluong.com}
+      ZITADEL_EXTERNALPORT: "8089"
+      ZITADEL_EXTERNALSECURE: "false"
+      ZITADEL_TLS_ENABLED: "false"
+      ZITADEL_DATABASE_POSTGRES_DSN: postgresql://postgres:postgres-a2-dev-pw@a2-postgres:5432/zitadel?sslmode=disable
+      ZITADEL_FIRSTINSTANCE_ORG_HUMAN_PASSWORDCHANGEREQUIRED: "false"
+      # The first-instance org is the platform org: it owns the project and holds staff and apps.
+      ZITADEL_FIRSTINSTANCE_ORG_NAME: platform
+      # Dev: bcrypt cost 14 (default) makes each user create/login ~1s of CPU; the suite creates hundreds in parallel.
+      ZITADEL_SYSTEMDEFAULTS_PASSWORDHASHER_HASHER_COST: "6"
+      # Service account (IAM owner) for the app: creates orgs, users, machine clients, authorizations.
+      ZITADEL_FIRSTINSTANCE_PATPATH: /zitadel/bootstrap/admin.pat
+      ZITADEL_FIRSTINSTANCE_ORG_MACHINE_MACHINE_USERNAME: platform-spike-admin
+      ZITADEL_FIRSTINSTANCE_ORG_MACHINE_MACHINE_NAME: platform-spike-admin
+      ZITADEL_FIRSTINSTANCE_ORG_MACHINE_PAT_EXPIRATIONDATE: "2099-01-01T00:00:00Z"
+      # IAM_LOGIN_CLIENT: the login driver uses it in place of a login UI.
+      ZITADEL_FIRSTINSTANCE_LOGINCLIENTPATPATH: /zitadel/bootstrap/login-client.pat
+      ZITADEL_FIRSTINSTANCE_ORG_LOGINCLIENT_MACHINE_USERNAME: login-client
+      ZITADEL_FIRSTINSTANCE_ORG_LOGINCLIENT_MACHINE_NAME: login-client
+      ZITADEL_FIRSTINSTANCE_ORG_LOGINCLIENT_PAT_EXPIRATIONDATE: "2099-01-01T00:00:00Z"
+      ZITADEL_DEFAULTINSTANCE_FEATURES_LOGINV2_REQUIRED: "true"
+      ZITADEL_DEFAULTINSTANCE_FEATURES_LOGINV2_BASEURI: http://${STACK_A2_HOST:-cs-ws.lab.alexluong.com}:8089/ui/v2/login/
+      ZITADEL_OIDC_DEFAULTLOGINURLV2: http://${STACK_A2_HOST:-cs-ws.lab.alexluong.com}:8089/ui/v2/login/login?authRequest=
+    ports: ["8089:8089"]
+    volumes: [a2-zitadel-bootstrap:/zitadel/bootstrap]
+    networks:
+      a2-net:
+        aliases: ["${STACK_A2_HOST:-cs-ws.lab.alexluong.com}"]
+    mem_limit: 1g
+    depends_on:
+      a2-postgres: {condition: service_healthy}
+    healthcheck:
+      test: ["CMD", "/app/zitadel", "ready"]
+      interval: 5s
+      timeout: 10s
+      retries: 60
+      start_period: 20s
+
+  a2-spicedb-migrate:
+    profiles: [a2]
+    image: authzed/spicedb:v1.56.2
+    command: ["datastore", "migrate", "head", "--datastore-engine=postgres",
+              "--datastore-conn-uri=postgres://postgres:postgres-a2-dev-pw@a2-postgres:5432/spicedb?sslmode=disable"]
+    networks: [a2-net]
+    depends_on:
+      a2-postgres: {condition: service_healthy}
+
+  a2-spicedb:
+    profiles: [a2]
+    image: authzed/spicedb:v1.56.2
+    command: ["serve", "--grpc-preshared-key=spicedb-a2-dev-key", "--datastore-engine=postgres",
+              "--datastore-conn-uri=postgres://postgres:postgres-a2-dev-pw@a2-postgres:5432/spicedb?sslmode=disable",
+              "--datastore-revision-quantization-interval=100ms", "--http-enabled=false"]
+    networks: [a2-net]
+    mem_limit: 512m
+    depends_on:
+      a2-spicedb-migrate: {condition: service_completed_successfully}
+
+  a2-bootstrap:
+    profiles: [a2]
+    build: ../../go
+    image: platform-spike-go:a2
+    command: ["bootstrap"]
+    environment: &a2appenv
+      DATABASE_URL: postgres://postgres:postgres-a2-dev-pw@a2-postgres:5432/app?sslmode=disable
+      IDP: zitadel-orgs
+      AUTHZ: spicedb
+      PORT: "8088"
+      SPICEDB_ENDPOINT: a2-spicedb:50051
+      SPICEDB_KEY: spicedb-a2-dev-key
+      ZITADEL_ISSUER: http://${STACK_A2_HOST:-cs-ws.lab.alexluong.com}:8089
+      ZITADEL_ADMIN_PAT_FILE: /zitadel/bootstrap/admin.pat
+      ZITADEL_LOGIN_PAT_FILE: /zitadel/bootstrap/login-client.pat
+      STACK_CONFIG: /stack/stack.json
+      TEST_MODE: "1"
+      TEST_SECRET: ${TEST_SECRET:-test-secret}
+    volumes:
+      - a2-zitadel-bootstrap:/zitadel/bootstrap:ro
+      - a2-stack:/stack
+    networks: [a2-net]
+    depends_on:
+      a2-postgres: {condition: service_healthy}
+      a2-zitadel: {condition: service_healthy}
+      a2-spicedb: {condition: service_started}
+
+  a2-app:
+    profiles: [a2]
+    image: platform-spike-go:a2
+    command: ["server"]
+    environment: *a2appenv
+    ports: ["8088:8088"]
+    volumes: [a2-stack:/stack:ro]
+    networks: [a2-net]
+    mem_limit: 256m
+    restart: unless-stopped
+    depends_on:
+      a2-bootstrap: {condition: service_completed_successfully}
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8088/healthz"]
+      interval: 3s
+      timeout: 5s
+      retries: 40
+
+networks:
+  a2-net: {}
+
+volumes:
+  a2-pg: {}
+  a2-zitadel-bootstrap: {}
+  a2-stack: {}

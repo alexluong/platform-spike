@@ -181,6 +181,28 @@ describe.skipIf(!enabled)('idp-tenancy', () => {
       expect((await me(u.token)).merchantId).toBe(b.id)
     })
 
+    // review-d: the second join hit the unique index inside the IdP's accept, which aborted the
+    // transaction and answered 500. One merchant per user must hold under races, with a clean 409.
+    test('two merchants invite the same user; accepting both at once → one 200, one 409; one merchant', async () => {
+      const [a, b] = await Promise.all([newMerchant(), newMerchant()])
+      const u = await newUser('user', { label: 'invitee' })
+      const [ia, ib] = await Promise.all([a.invite(u.email), b.invite(u.email)])
+      const rs = await Promise.all([accept(u, ia.id), accept(u, ib.id)])
+      expect(rs.map((r) => r.status).sort(), rs.map((r) => `${r.status} ${r.text}`).join(' | ')).toEqual([200, 409])
+      const won = rs[0]!.status === 200 ? a : b
+      expect((await me(u.token)).merchantId).toBe(won.id)
+    })
+
+    test('accept racing a direct add elsewhere → one 2xx, one 409', async () => {
+      const [a, b] = await Promise.all([newMerchant(), newMerchant()])
+      const u = await newUser('user', { label: 'invitee' })
+      const inv = await a.invite(u.email)
+      const rs = await Promise.all([accept(u, inv.id), b.owner.api.post(`/api/merchants/${b.id}/members`, { userId: u.id })])
+      const st = rs.map((r) => r.status)
+      expect(st.filter((x) => x === 409).length, rs.map((r) => `${r.status} ${r.text}`).join(' | ')).toBe(1)
+      expect(st.filter((x) => x >= 200 && x < 300).length).toBe(1)
+    })
+
     test('accept without a token → 401', async () => {
       const m = await newMerchant()
       const { inv } = await invited(m)

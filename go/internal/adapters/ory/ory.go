@@ -105,7 +105,7 @@ func (c *Client) Ping(ctx context.Context) error {
 
 // CreateUser creates a Kratos identity with a password credential; the subject is the identity id
 // (the login driver accepts Hydra's login request with that id).
-func (c *Client) CreateUser(ctx context.Context, email, password string) (string, error) {
+func (c *Client) CreateUser(ctx context.Context, email, password, _ string) (string, error) {
 	var out struct {
 		ID string `json:"id"`
 	}
@@ -119,7 +119,7 @@ func (c *Client) CreateUser(ctx context.Context, email, password string) (string
 
 // CreateClient registers a Hydra OAuth2 client (client_credentials). Hydra's
 // client-credentials tokens carry the client id as `sub`.
-func (c *Client) CreateClient(ctx context.Context, name string) (identity.Client, error) {
+func (c *Client) CreateClient(ctx context.Context, name, _ string) (identity.Client, error) {
 	var out struct {
 		ClientID     string `json:"client_id"`
 		ClientSecret string `json:"client_secret"`
