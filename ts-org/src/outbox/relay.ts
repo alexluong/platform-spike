@@ -7,13 +7,14 @@
 //   (processed_at set, last_error "dead: …").
 // - The request that wrote rows settles them before it responds (`settle`); a background loop
 //   (`start`) retries whatever is left.
-// - Waiting for the lock holds no connection: `pg_try_advisory_xact_lock`, then poll. (Go's relay
+// - In one process, concurrent settles share one drain pass (single flight). Across processes,
+//   waiting for the lock holds no connection: `pg_try_advisory_xact_lock`, then poll. (Go's relay
 //   blocks on `pg_advisory_xact_lock` with a pool connection held: review-a 19.)
 // - The engine's consistency token after the last write is stored in the drain's transaction
 //   (`authz_consistency`), so checks on any instance can ask for at-least-that-fresh.
-import { and, asc, isNull, lte, sql } from 'drizzle-orm'
+import { asc, isNull, sql } from 'drizzle-orm'
 import type pg from 'pg'
-import { makeDb, withTransaction, type Tx } from '../db/client.js'
+import { withTransaction, type Tx } from '../db/client.js'
 import { authzConsistency, outbox } from '../db/schema.js'
 
 /** An outbox event as the modules emit it (`emit({ type, …ids })`). */
@@ -42,7 +43,7 @@ const ALERT_ATTEMPTS = 10
 export interface Relay {
   /** One pass: lock, apply up to BATCH pending rows in order, commit. */
   batch(): Promise<{ locked: boolean; applied: number; failed: boolean }>
-  /** Apply every row visible now; true when none with id ≤ the current max is left pending. */
+  /** Apply every row committed before the call (single flight per process); false on timeout. */
   settle(timeoutMs: number): Promise<boolean>
   start(everyMs: number): () => void
 }
@@ -52,7 +53,6 @@ type Log = Pick<Console, 'error' | 'warn'>
 export function makeRelay(deps: { pool: pg.Pool; sync: RelationSync; log?: Log }): Relay {
   const { pool, sync } = deps
   const log = deps.log ?? console
-  const db = makeDb(pool)
 
   async function batch() {
     return withTransaction(pool, async (tx) => {
@@ -105,41 +105,47 @@ export function makeRelay(deps: { pool: pg.Pool; sync: RelationSync; log?: Log }
     })
   }
 
+  /** Batches until the queue is empty (complete), a row fails, or another instance holds the lock. */
+  async function pass(): Promise<{ complete: boolean; failed: boolean }> {
+    try {
+      for (;;) {
+        const r = await batch()
+        if (!r.locked) return { complete: false, failed: false }
+        if (r.failed) return { complete: false, failed: true }
+        if (r.applied < BATCH) return { complete: true, failed: false }
+      }
+    } catch (err) {
+      log.warn(`outbox relay: ${err instanceof Error ? err.message : err}`)
+      return { complete: false, failed: true }
+    }
+  }
+
+  // Single flight per process: one pass at a time; callers that arrive while one runs share the
+  // next one. A complete pass that *started* after a caller's commit has applied that caller's
+  // rows (they were visible to its first select), so no per-caller "is my row done" query.
+  let current: Promise<{ complete: boolean; failed: boolean }> | null = null
+  let next: Promise<{ complete: boolean; failed: boolean }> | null = null
+  function freshPass() {
+    const run = () => (current = pass().finally(() => (current = null)))
+    if (!current) return run()
+    return (next ??= current.then(() => {
+      next = null
+      return current ?? run()
+    }))
+  }
+
   async function settle(timeoutMs: number) {
     const deadline = Date.now() + timeoutMs
-    const [{ max } = { max: null }] = await db.select({ max: sql<number | null>`max(${outbox.id})` }).from(outbox)
-    if (max == null) return true
-    const pending = async () => (await db.select({ id: outbox.id }).from(outbox).where(and(isNull(outbox.processedAt), lte(outbox.id, Number(max)))).limit(1)).length > 0
     for (;;) {
-      let r = { locked: false, applied: 0, failed: false }
-      try {
-        r = await batch()
-      } catch (err) {
-        log.warn(`outbox drain: ${err instanceof Error ? err.message : err}`)
-        r.failed = true
-      }
-      if (!(await pending())) return true
-      if (Date.now() >= deadline) return false
-      if (!r.locked || r.failed || r.applied === 0) await sleep(r.failed ? 100 : 10)
+      const r = await Promise.race([freshPass(), sleep(Math.max(0, deadline - Date.now())).then(() => null)])
+      if (r?.complete) return true
+      if (!r || Date.now() >= deadline) return false
+      await sleep(r.failed ? 100 : 10) // failing row, or another instance is draining
     }
   }
 
   function start(everyMs: number) {
-    let running = false
-    const timer = setInterval(async () => {
-      if (running) return
-      running = true
-      try {
-        for (;;) {
-          const r = await batch()
-          if (!r.locked || r.failed || r.applied < BATCH) break
-        }
-      } catch (err) {
-        log.warn(`outbox relay: ${err instanceof Error ? err.message : err}`)
-      } finally {
-        running = false
-      }
-    }, everyMs)
+    const timer = setInterval(() => void freshPass(), everyMs)
     timer.unref()
     return () => clearInterval(timer)
   }

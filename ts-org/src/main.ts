@@ -89,7 +89,8 @@ if (config.AUTHZ === 'spicedb') {
   const spicedb = makeSpiceDbAuthorizer({ client, db: pipDb, pip })
   await retry('spicedb schema', () => spicedb.writeSchema())
   authz = spicedb
-  relay = makeRelay({ pool, sync: makeSpiceDbSync(client) })
+  // Own small pool: a drain holds a connection across SpiceDB calls; it must never starve requests.
+  relay = makeRelay({ pool: new pg.Pool({ ...poolOpts, max: 3 }), sync: makeSpiceDbSync(client) })
   // System roles live in code: (re)sync them at every start, through the outbox like any change.
   await db.insert(outbox).values({ action: 'system.start', actor: 'system', payload: { events: [{ type: 'system_roles.sync' }] } })
   if (!(await relay.settle(30_000))) throw new Error('outbox relay: could not apply the system roles to SpiceDB')
