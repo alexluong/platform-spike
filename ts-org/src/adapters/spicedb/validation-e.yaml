@@ -1,0 +1,22 @@
+# zed validate: the membership addition of stack e (schema.ts `membership`). Go's validation.yaml
+# (go/internal/adapters/spicedb/validation.yaml) runs against e's schema too (schema.test.ts).
+schemaFile: ./schema.zed
+relationships: |-
+  merchant:m1#platform@platform:main
+  merchant:m1#any_user@user:*
+  merchant:m1#member@user:alice
+  merchant:m1#member@user:bob
+  merchant:m2#any_user@user:*
+  merchant:m2#member@user:erin
+  merchant:m2#suspended@user:*
+  merchant:m2#suspended@agent:*
+  merchant:m2#suspended@app:*
+assertions:
+  assertTrue:
+    - merchant:m1#agent_register@user:alice
+    - merchant:m1#agent_register@user:bob
+  assertFalse:
+    - merchant:m1#agent_register@user:erin
+    - merchant:m1#agent_register@user:nobody
+    - merchant:m2#agent_register@user:erin
+    - merchant:m2#agent_register@user:alice
