@@ -1,13 +1,19 @@
 // Thin helpers over @authzed/authzed-node (protobuf-ts messages): connect, build relationships,
 // write/delete/read, classify errors. Shared by the authorizer and the relationship sync.
-import { protobuf, v1 } from '@authzed/authzed-node'
+import { deadlineInterceptor, protobuf, v1 } from '@authzed/authzed-node'
+
+const CALL_DEADLINE_MS = 3_000
 
 export type SpiceClient = v1.ZedPromiseClientInterface
 export type Rel = v1.Relationship
 
 /** Plaintext gRPC inside the compose network, preshared key. */
 export function connect(endpoint: string, presharedKey: string): SpiceClient {
-  return v1.NewClient(presharedKey, endpoint, v1.ClientSecurity.INSECURE_PLAINTEXT_CREDENTIALS).promises
+  // Every call gets a deadline: without one, a call to an unreachable SpiceDB waits for the channel
+  // to connect (~20 s per call here), and a request settling the outbox waits that long.
+  return v1.NewClient(presharedKey, endpoint, v1.ClientSecurity.INSECURE_PLAINTEXT_CREDENTIALS, undefined, {
+    interceptors: [deadlineInterceptor(CALL_DEADLINE_MS)],
+  }).promises
 }
 
 /** The single platform object (Go uses the same id). */
