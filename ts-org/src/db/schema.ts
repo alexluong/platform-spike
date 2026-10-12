@@ -3,6 +3,7 @@
 // invitation) and migrates them itself. Merchants and members are Better Auth's organizations and
 // members (SPEC §15.1): read-only mirrors in idp-tables.ts; the FKs to "organization" are in a
 // hand-written migration (drizzle/0001_idp_links.sql) so drizzle-kit never tries to create that table.
+import { sql } from 'drizzle-orm'
 import { index, integer, jsonb, pgTable, text, timestamp, uniqueIndex, bigserial } from 'drizzle-orm/pg-core'
 
 /** Money columns are Postgres `integer`: inputs above this would fail the insert (500). */
@@ -215,13 +216,28 @@ export const audit = pgTable(
   (t) => [index('audit_merchant').on(t.merchantId)],
 )
 
-/** Events written in the same transaction as the change (SPEC §1.1). With Cerbos nothing needs to
- *  be relayed to the engine (it is stateless), so no relay consumes these; they are the hook a
- *  relationship engine or other subscribers would use. */
-export const outbox = pgTable('outbox', {
-  id: bigserial('id', { mode: 'number' }).primaryKey(),
-  action: text('action').notNull(),
-  actor: text('actor').notNull(),
-  payload: jsonb('payload').notNull(),
-  createdAt: ts('created_at').notNull().defaultNow(),
+/** Events written in the same transaction as the change (SPEC §1.1). Stack d (Cerbos, stateless)
+ *  has no consumer; stack e's relay (outbox/relay.ts) applies them to SpiceDB and records delivery
+ *  in the last three columns. */
+export const outbox = pgTable(
+  'outbox',
+  {
+    id: bigserial('id', { mode: 'number' }).primaryKey(),
+    action: text('action').notNull(),
+    actor: text('actor').notNull(),
+    payload: jsonb('payload').notNull(),
+    createdAt: ts('created_at').notNull().defaultNow(),
+    processedAt: ts('processed_at'),
+    attempts: integer('attempts').notNull().default(0),
+    lastError: text('last_error'),
+  },
+  (t) => [index('outbox_pending').on(t.id).where(sql`processed_at IS NULL`)],
+)
+
+/** The engine's consistency token after the relay's latest write (SpiceDB ZedToken), one row. In the
+ *  DB rather than in process memory so read-your-writes holds across app instances (SPEC §1). */
+export const authzConsistency = pgTable('authz_consistency', {
+  id: integer('id').primaryKey(),
+  token: text('token').notNull(),
+  updatedAt: ts('updated_at').notNull().defaultNow(),
 })

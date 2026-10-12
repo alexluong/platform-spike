@@ -2,3 +2,4 @@
 go = "1.27.2"
 node = "24.21.0"
 pnpm = "12.11.2"
+"github:authzed/zed" = "1.2.1"

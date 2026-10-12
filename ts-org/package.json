@@ -10,6 +10,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
+    "@authzed/authzed-node": "1.6.1",
     "@better-auth/core": "1.7.7",
     "@better-auth/kysely-adapter": "1.7.7",
     "@better-auth/oauth-provider": "^1.7.7",

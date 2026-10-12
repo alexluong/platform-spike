@@ -15,6 +15,13 @@
       "when": 1791845751710,
       "tag": "0001_idp_links",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1791847244003,
+      "tag": "0002_outbox_relay",
+      "breakpoints": true
     }
   ]
 }

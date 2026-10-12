@@ -1,0 +1,76 @@
+# Stack e: the stack-d app (TypeScript, Hono, Better Auth + organization plugin) with SpiceDB instead
+# of Cerbos (AUTHZ=spicedb), one Postgres (app + Better Auth in `ps`, SpiceDB in `spicedb`). SPEC §15.
+#   DOCKER_HOST=ssh://cs-ws docker compose -p ps-e --profile e up -d --build
+# No bind mounts: the app is built from ../../ts-org (same image as d); the SpiceDB schema is
+# generated from the catalog and written by the app at start, which also runs the migrations
+# (Better Auth's, then Drizzle's) and the outbox relay.
+services:
+  e-postgres:
+    profiles: ["e"]
+    build: ./postgres
+    environment:
+      POSTGRES_USER: ps
+      POSTGRES_PASSWORD: ps-dev-only
+      POSTGRES_DB: ps
+    command: ["postgres", "-c", "shared_buffers=64MB", "-c", "max_connections=100"]
+    volumes:
+      - e-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ps -d ps"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    mem_limit: 384m
+
+  e-spicedb-migrate:
+    profiles: ["e"]
+    image: authzed/spicedb:v1.56.2
+    command: ["datastore", "migrate", "head", "--datastore-engine=postgres",
+              "--datastore-conn-uri=postgres://ps:ps-dev-only@e-postgres:5432/spicedb?sslmode=disable"]
+    depends_on:
+      e-postgres: { condition: service_healthy }
+
+  e-spicedb:
+    profiles: ["e"]
+    image: authzed/spicedb:v1.56.2
+    # dev-only preshared key for the local stack
+    command: ["serve", "--grpc-preshared-key=spicedb-e-dev-key", "--datastore-engine=postgres",
+              "--datastore-conn-uri=postgres://ps:ps-dev-only@e-postgres:5432/spicedb?sslmode=disable",
+              "--datastore-revision-quantization-interval=100ms", "--http-enabled=false"]
+    depends_on:
+      e-spicedb-migrate: { condition: service_completed_successfully }
+    mem_limit: 512m
+
+  e-app:
+    profiles: ["e"]
+    build: ../../ts-org
+    depends_on:
+      e-postgres: { condition: service_healthy }
+      e-spicedb: { condition: service_started }
+    environment:
+      PORT: "8087"
+      DATABASE_URL: postgres://ps:ps-dev-only@e-postgres:5432/ps
+      AUTHZ: spicedb
+      SPICEDB_ENDPOINT: e-spicedb:50051
+      SPICEDB_KEY: spicedb-e-dev-key
+      AUTH_BASE_URL: http://localhost:8087
+      # dev-only secret for the local stack
+      AUTH_SECRET: e-stack-dev-only-secret-6d1f0a9c3b7e2a48
+      API_RESOURCE: urn:platform-spike:api
+      # the suite signs in hundreds of users from one IP; production keeps it on and sets AUTH_IP_HEADER
+      AUTH_RATE_LIMIT: "off"
+      TEST_MODE: "1"
+      TEST_SECRET: test-secret
+    ports:
+      - "8087:8087"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:8087/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 3s
+      timeout: 3s
+      retries: 40
+      start_period: 5s
+    mem_limit: 512m
+    restart: unless-stopped
+
+volumes:
+  e-pgdata:
