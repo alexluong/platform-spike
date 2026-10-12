@@ -59,6 +59,18 @@ func (m *Module) addMember(ctx context.Context, r *core.Req) (any, error) {
 	if current != nil {
 		return nil, core.Conflict("already_member") // one merchant per user in this spike
 	}
+	// The executor's suspension check reads the merchant without a lock. Lock it here (as
+	// invitation accept does) so a concurrent suspend either waits for this join, and its
+	// outbox row lands after member.added, or wins and the join is refused. Without it a join
+	// committed after the suspend reached the IdP after the suspension's fan-out, and the new
+	// member could log in to a suspended merchant (review-a2 finding 1).
+	var mstatus string
+	if err := r.Tx.QueryRow(ctx, `SELECT status FROM merchants WHERE id=$1 FOR SHARE`, mid).Scan(&mstatus); err != nil {
+		return nil, err
+	}
+	if mstatus == "suspended" {
+		return nil, core.ErrMerchantSuspended
+	}
 	if _, err := r.Tx.Exec(ctx, `UPDATE users SET merchant_id=$2 WHERE id=$1`, in.UserID, mid); err != nil {
 		return nil, err
 	}
