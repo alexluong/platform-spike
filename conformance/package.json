@@ -4,7 +4,8 @@
   "type": "module",
   "scripts": {
     "test": "vitest run",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "tour": "vitest run --config tour.config.ts --reporter=dot"
   },
   "devDependencies": {
     "@types/node": "^26.6.5",

@@ -12,5 +12,5 @@
     "verbatimModuleSyntax": true,
     "noUncheckedIndexedAccess": false
   },
-  "include": ["src", "stacks", "tests", "vitest.config.ts"]
+  "include": ["src", "stacks", "tests", "tour", "vitest.config.ts", "tour.config.ts"]
 }
