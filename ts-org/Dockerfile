@@ -15,5 +15,5 @@ COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 RUN pnpm install --frozen-lockfile --prod && npm rm -g pnpm
 COPY --from=build /app/dist ./dist
 COPY drizzle ./drizzle
-EXPOSE 8083
+EXPOSE 8086
 CMD ["node", "dist/main.js"]

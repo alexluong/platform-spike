@@ -1,5 +1,5 @@
 {
-  "name": "platform-spike-ts",
+  "name": "platform-spike-ts-org",
   "private": true,
   "type": "module",
   "scripts": {
@@ -10,7 +10,8 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
-    "@better-auth/api-key": "^1.7.7",
+    "@better-auth/core": "1.7.7",
+    "@better-auth/kysely-adapter": "1.7.7",
     "@better-auth/oauth-provider": "^1.7.7",
     "@cerbos/core": "0.33.1",
     "@cerbos/grpc": "^0.29.1",
@@ -18,6 +19,7 @@
     "better-auth": "^1.7.7",
     "drizzle-orm": "^0.45.4",
     "hono": "^4.13.13",
+    "kysely": "0.29.6",
     "pg": "^8.23.1",
     "zod": "^4.6.5"
   },

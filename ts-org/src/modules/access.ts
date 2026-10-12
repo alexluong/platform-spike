@@ -3,7 +3,8 @@
 // ever sees "this principal holds these permissions at these scopes".
 import { and, eq, isNull, max } from 'drizzle-orm'
 import type { Queryable } from '../db/client.js'
-import { agentGrants, agents, appInstalls, appUsers, breakGlass, members, merchants, roleAssignments, roles, stores } from '../db/schema.js'
+import { member, organization as merchants } from '../db/idp-tables.js'
+import { agentGrants, agents, appInstalls, appUsers, breakGlass, roleAssignments, roles, stores } from '../db/schema.js'
 import { systemRole } from '../kernel/catalog.js'
 
 export interface Access {
@@ -29,7 +30,8 @@ const emptyAccess = (): Access => ({ owner: false, merchantPerms: [], merchantRe
 
 /** Effective access of a merchant user, straight from assignments (no cache: edits apply on the next request). */
 export async function accessOf(db: Queryable, userId: string): Promise<{ merchantId: string | null; access: Access }> {
-  const [m] = await db.select({ merchantId: members.merchantId }).from(members).where(eq(members.userId, userId))
+  // membership is the IdP's (organization plugin's member table, same Postgres; SPEC §15.1)
+  const [m] = await db.select({ merchantId: member.organizationId }).from(member).where(eq(member.userId, userId))
   if (!m) return { merchantId: null, access: emptyAccess() }
   const rows = await db
     .select({
@@ -119,7 +121,7 @@ export function makeAccessResolver(db: Queryable) {
       if (type === 'platform') return {}
       if (type === 'merchant') {
         const [m] = await db.select({ status: merchants.status }).from(merchants).where(eq(merchants.id, id))
-        return m ? { merchantId: id, status: m.status } : null
+        return m ? { merchantId: id, status: m.status ?? 'active' } : null
       }
       if (type === 'store') {
         const [s] = await db
@@ -127,7 +129,7 @@ export function makeAccessResolver(db: Queryable) {
           .from(stores)
           .innerJoin(merchants, eq(merchants.id, stores.merchantId))
           .where(eq(stores.id, id))
-        return s ? { merchantId: s.merchantId, storeId: id, status: s.status } : null
+        return s ? { merchantId: s.merchantId, storeId: id, status: s.status ?? 'active' } : null
       }
       return null
     },

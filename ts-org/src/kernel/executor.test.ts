@@ -18,6 +18,10 @@ function fakeDb(rows: unknown[] = []) {
   return { inserts, selects, db: { select, transaction: (fn: (t: unknown) => unknown) => fn(tx) } as never }
 }
 
+/** The fake DB's transaction, with an IdP port nobody calls here. */
+const transactOf = (db: { transaction: (fn: (t: unknown) => unknown) => unknown }) =>
+  ((fn: (tx: unknown, idp: unknown) => unknown) => db.transaction((tx) => fn(tx, {}))) as never
+
 function fakeAuthz(decide: (action: string) => Decision, calls = { n: 0 }): Authorizer {
   return {
     evaluate: async (r) => (calls.n++, decide(r.action.name)),
@@ -59,26 +63,26 @@ const app: Principal = { kind: 'app', id: 'app1', credential: 'Bearer y' }
 describe('executor', () => {
   it('401 without a principal, before validation', async () => {
     const { db } = fakeDb()
-    const ex = makeExecutor({ db, authz: fakeAuthz(() => ({ decision: true })), registry })
+    const ex = makeExecutor({ db, transact: transactOf(db), authz: fakeAuthz(() => ({ decision: true })), registry })
     await expect(ex.execute('thing.do', null, {})).rejects.toMatchObject({ status: 401, code: 'unauthenticated' })
   })
 
   it('403 for a principal kind the action does not accept (token check)', async () => {
     const { db } = fakeDb()
-    const ex = makeExecutor({ db, authz: fakeAuthz(() => ({ decision: true })), registry })
+    const ex = makeExecutor({ db, transact: transactOf(db), authz: fakeAuthz(() => ({ decision: true })), registry })
     await expect(ex.execute('thing.do', { ...user, kind: 'app' }, { n: 1 })).rejects.toMatchObject({ status: 403 })
   })
 
   it('400 on invalid input', async () => {
     const { db } = fakeDb()
-    const ex = makeExecutor({ db, authz: fakeAuthz(() => ({ decision: true })), registry })
+    const ex = makeExecutor({ db, transact: transactOf(db), authz: fakeAuthz(() => ({ decision: true })), registry })
     await expect(ex.execute('thing.do', user, { n: 'x' })).rejects.toMatchObject({ status: 400, code: 'invalid_input' })
   })
 
   it('deny → 403 with the engine reason, and run never happens', async () => {
     const { db, inserts } = fakeDb()
     const before = ran
-    const ex = makeExecutor({ db, authz: fakeAuthz(() => ({ decision: false, context: { reason: 'merchant_suspended' } })), registry })
+    const ex = makeExecutor({ db, transact: transactOf(db), authz: fakeAuthz(() => ({ decision: false, context: { reason: 'merchant_suspended' } })), registry })
     await expect(ex.execute('thing.do', user, { n: 1 })).rejects.toMatchObject({ status: 403, code: 'merchant_suspended' })
     expect(ran).toBe(before)
     expect(inserts).toHaveLength(0)
@@ -86,7 +90,7 @@ describe('executor', () => {
 
   it('allow → runs and writes one outbox row with the emitted events', async () => {
     const { db, inserts } = fakeDb()
-    const ex = makeExecutor({ db, authz: fakeAuthz(() => ({ decision: true })), registry })
+    const ex = makeExecutor({ db, transact: transactOf(db), authz: fakeAuthz(() => ({ decision: true })), registry })
     expect(await ex.execute('thing.do', user, { n: 7 })).toEqual({ ok: 7 })
     expect(inserts).toHaveLength(1)
     expect(inserts[0]!.values).toMatchObject({ action: 'thing.do', actor: 'u1', payload: { events: [{ n: 7 }] } })
@@ -94,14 +98,14 @@ describe('executor', () => {
 
   it('break-glass decisions add an audit row with the catalog action', async () => {
     const { db, inserts } = fakeDb()
-    const ex = makeExecutor({ db, authz: fakeAuthz(() => ({ decision: true, context: { breakGlass: true, merchantId: 'm9' } })), registry })
+    const ex = makeExecutor({ db, transact: transactOf(db), authz: fakeAuthz(() => ({ decision: true, context: { breakGlass: true, merchantId: 'm9' } })), registry })
     await ex.execute('thing.do', user, { n: 1 })
     expect(inserts.map((i) => i.values)).toContainEqual({ actor: 'u1', action: 'thing.do', merchantId: 'm9' })
   })
 
   it('break-glass decisions inside run (batch can) are audited too', async () => {
     const { db, inserts } = fakeDb()
-    const ex = makeExecutor({ db, authz: fakeAuthz(() => ({ decision: true, context: { breakGlass: true, merchantId: 'm9' } })), registry })
+    const ex = makeExecutor({ db, transact: transactOf(db), authz: fakeAuthz(() => ({ decision: true, context: { breakGlass: true, merchantId: 'm9' } })), registry })
     await ex.execute('thing.list', user, {})
     const rows = inserts.map((i) => i.values)
     expect(rows).toContainEqual({ actor: 'u1', action: 'a.view', merchantId: 'm9' })
@@ -111,7 +115,7 @@ describe('executor', () => {
   it('an app with no install row on the store is denied in SQL, before the engine', async () => {
     const { db, selects } = fakeDb([])
     const calls = { n: 0 }
-    const ex = makeExecutor({ db, authz: fakeAuthz(() => ({ decision: true }), calls), registry })
+    const ex = makeExecutor({ db, transact: transactOf(db), authz: fakeAuthz(() => ({ decision: true }), calls), registry })
     await expect(ex.execute('thing.read', app, {})).rejects.toMatchObject({ status: 403 })
     expect(await ex.execute('thing.list', app, {})).toEqual([false, false])
     expect(selects.n).toBe(2)
@@ -121,7 +125,7 @@ describe('executor', () => {
   it('an app with an install row goes on to the engine', async () => {
     const { db } = fakeDb([{ id: 'inst1' }])
     const calls = { n: 0 }
-    const ex = makeExecutor({ db, authz: fakeAuthz(() => ({ decision: true }), calls), registry })
+    const ex = makeExecutor({ db, transact: transactOf(db), authz: fakeAuthz(() => ({ decision: true }), calls), registry })
     expect(await ex.execute('thing.list', app, {})).toEqual([true, true])
     expect(calls.n).toBe(1)
   })

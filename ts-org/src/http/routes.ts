@@ -80,6 +80,10 @@ export function buildHttp(deps: HttpDeps) {
   app.delete('/api/merchants/:merchantId/roles/:roleId', act('role.delete', 204))
   app.post('/api/merchants/:merchantId/role-assignments', act('role.assign', 201))
   app.delete('/api/merchants/:merchantId/role-assignments/:assignmentId', act('role.unassign', 204))
+  app.post('/api/merchants/:merchantId/invitations', act('invitation.create', 201))
+  app.get('/api/merchants/:merchantId/invitations', act('invitation.list'))
+  app.delete('/api/merchants/:merchantId/invitations/:invitationId', act('invitation.cancel', 204))
+  app.post('/api/invitations/:invitationId/accept', act('invitation.accept'))
   app.post('/api/merchants/:merchantId/stores', act('store.create', 201))
   app.get('/api/merchants/:merchantId/stores', act('store.list'))
 

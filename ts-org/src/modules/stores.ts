@@ -2,7 +2,8 @@
 import { and, desc, eq, inArray } from 'drizzle-orm'
 import { z } from 'zod'
 import { newId } from '../db/ids.js'
-import { merchants, stores } from '../db/schema.js'
+import { organization as merchants } from '../db/idp-tables.js'
+import { stores } from '../db/schema.js'
 import { defineAction } from '../kernel/action.js'
 import { type Authorizer, subjectOf } from '../kernel/authz.js'
 import { notFound } from '../kernel/errors.js'
@@ -53,7 +54,7 @@ export function storeActions(deps: { authz: Pick<Authorizer, 'searchResources' |
         ? await deps.authz.searchResources({
             subject,
             action: { name: 'store.view' },
-            resource: { type: 'store', properties: { merchantId: m.id, status: m.status } },
+            resource: { type: 'store', properties: { merchantId: m.id, status: m.status ?? 'active' } },
           })
         : ({ kind: 'unsupported' } as const)
       const base = eq(stores.merchantId, m.id)

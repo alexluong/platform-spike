@@ -1,5 +1,8 @@
 // App tables (source of truth for roles, assignments, installs, grants). Better Auth owns its own
-// tables (user, session, account, jwks, oauth*) and migrates them itself.
+// tables (user, session, account, jwks, oauth*, and with the organization plugin organization, member,
+// invitation) and migrates them itself. Merchants and members are Better Auth's organizations and
+// members (SPEC §15.1): read-only mirrors in idp-tables.ts; the FKs to "organization" are in a
+// hand-written migration (drizzle/0001_idp_links.sql) so drizzle-kit never tries to create that table.
 import { index, integer, jsonb, pgTable, text, timestamp, uniqueIndex, bigserial } from 'drizzle-orm/pg-core'
 
 /** Money columns are Postgres `integer`: inputs above this would fail the insert (500). */
@@ -16,30 +19,12 @@ export const appUsers = pgTable('app_users', {
   createdAt: ts('created_at').notNull().defaultNow(),
 })
 
-export const merchants = pgTable('merchants', {
-  id: text('id').primaryKey(),
-  name: text('name').notNull(),
-  status: text('status').$type<'active' | 'suspended'>().notNull().default('active'),
-  createdAt: ts('created_at').notNull().defaultNow(),
-})
-
-/** A user belongs to at most one merchant (SPEC §2). */
-export const members = pgTable('members', {
-  userId: text('user_id').primaryKey(),
-  merchantId: text('merchant_id')
-    .notNull()
-    .references(() => merchants.id),
-  createdAt: ts('created_at').notNull().defaultNow(),
-})
-
 /** Custom roles only; system roles live in code. */
 export const roles = pgTable(
   'roles',
   {
     id: text('id').primaryKey(),
-    merchantId: text('merchant_id')
-      .notNull()
-      .references(() => merchants.id),
+    merchantId: text('merchant_id').notNull(),
     name: text('name').notNull(),
     permissions: jsonb('permissions').$type<string[]>().notNull(),
     refundLimitCents: integer('refund_limit_cents'),
@@ -52,9 +37,7 @@ export const roleAssignments = pgTable(
   'role_assignments',
   {
     id: text('id').primaryKey(),
-    merchantId: text('merchant_id')
-      .notNull()
-      .references(() => merchants.id),
+    merchantId: text('merchant_id').notNull(),
     userId: text('user_id').notNull(),
     /** system role id ("owner") or custom role id; custom rows cascade via app code */
     roleId: text('role_id').notNull(),
@@ -69,9 +52,7 @@ export const stores = pgTable(
   'stores',
   {
     id: text('id').primaryKey(),
-    merchantId: text('merchant_id')
-      .notNull()
-      .references(() => merchants.id),
+    merchantId: text('merchant_id').notNull(),
     name: text('name').notNull(),
     createdAt: ts('created_at').notNull().defaultNow(),
   },

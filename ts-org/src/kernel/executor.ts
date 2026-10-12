@@ -1,11 +1,15 @@
 // The one executor: authenticate → validate → authorize (can) → run → outbox, in one transaction.
 import { and, eq } from 'drizzle-orm'
-import type { Db, Queryable } from '../db/client.js'
+import type { Db, Queryable, Tx } from '../db/client.js'
 import { appInstalls, audit, outbox } from '../db/schema.js'
 import type { ActionDef, Can, Check, Registry } from './action.js'
 import { type Authorizer, type Decision, type Resource, subjectOf } from './authz.js'
 import { AppError, forbidden, invalid, unauthenticated } from './errors.js'
 import type { Principal } from './principal.js'
+import type { Tenancy } from './tenancy.js'
+
+/** Opens the request's transaction and binds the IdP's tenancy port to it (composition root). */
+export type Transact = <T>(fn: (tx: Tx, idp: Tenancy) => Promise<T>) => Promise<T>
 
 export interface Executor {
   execute<O = unknown>(actionId: string, principal: Principal | null, rawInput: unknown): Promise<O>
@@ -55,8 +59,8 @@ export function denyError(d: Decision): AppError {
   return forbidden(typeof reason === 'string' ? reason : 'forbidden')
 }
 
-export function makeExecutor(deps: { db: Db; authz: Authorizer; registry: Registry }): Executor {
-  const { db, authz, registry } = deps
+export function makeExecutor(deps: { db: Db; transact: Transact; authz: Authorizer; registry: Registry }): Executor {
+  const { db, transact, authz, registry } = deps
   return {
     async execute(actionId, principal, rawInput) {
       const def = registry.get(actionId) as ActionDef | undefined
@@ -65,7 +69,7 @@ export function makeExecutor(deps: { db: Db; authz: Authorizer; registry: Regist
       if (def.public) {
         const input = parse(def, rawInput)
         const p = principal ?? { kind: 'customer', id: 'anonymous', credential: '' }
-        return db.transaction((tx) => def.run({ principal: p, tx, can: denyAll, emit: () => {} }, input))
+        return transact((tx, idp) => def.run({ principal: p, tx, idp, can: denyAll, emit: () => {} }, input))
       }
 
       // 1. authenticate
@@ -89,12 +93,12 @@ export function makeExecutor(deps: { db: Db; authz: Authorizer; registry: Regist
         if (!d.decision) throw denyError(d)
       }
 
-      // 4. run + outbox (+ break-glass audit) in one transaction. Checks made inside run (batch
+      // 4. run + outbox (+ break-glass audit) + the IdP's writes, in one transaction. Checks made inside run (batch
       //    can for /me/permissions, guardrails) are audited too: every break-glass read counts.
-      return db.transaction(async (tx) => {
+      return transact(async (tx, idp) => {
         const events: Record<string, unknown>[] = []
         const runCan = bindCan(authz, principal, tx, recordBreakGlass)
-        const result = await def.run({ principal, tx, can: runCan, emit: (e) => events.push(e) }, input)
+        const result = await def.run({ principal, tx, idp, can: runCan, emit: (e) => events.push(e) }, input)
         if (def.mutating) {
           await tx.insert(outbox).values({ action: def.id, actor: principal.id, payload: { input: input as object, events } })
         }

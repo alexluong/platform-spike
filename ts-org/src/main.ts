@@ -6,12 +6,12 @@ import pg from 'pg'
 import { z } from 'zod'
 import { makeBetterAuth, migrateBetterAuth, newInternalKey, API_SCOPE } from './adapters/better-auth.js'
 import { makeCerbosAuthorizer } from './adapters/cerbos.js'
-import { makeDb, migrateApp } from './db/client.js'
+import { makeDb, migrateApp, withTransaction } from './db/client.js'
 import { appUsers } from './db/schema.js'
 import { buildHttp } from './http/routes.js'
 import { buildRegistry } from './kernel/action.js'
 import { invalid } from './kernel/errors.js'
-import { makeExecutor } from './kernel/executor.js'
+import { makeExecutor, type Transact } from './kernel/executor.js'
 import { makeAccessResolver } from './modules/access.js'
 import { agentActions } from './modules/agents.js'
 import { appActions } from './modules/apps.js'
@@ -28,10 +28,10 @@ import { storeActions } from './modules/stores.js'
 
 const config = z
   .object({
-    PORT: z.coerce.number().default(8083),
+    PORT: z.coerce.number().default(8086),
     DATABASE_URL: z.string(),
     CERBOS_ADDRESS: z.string().default('localhost:3593'),
-    AUTH_BASE_URL: z.string().default('http://localhost:8083'),
+    AUTH_BASE_URL: z.string().default('http://localhost:8086'),
     AUTH_SECRET: z.string().min(32),
     API_RESOURCE: z.string().default('urn:platform-spike:api'),
     AUTH_RATE_LIMIT: z.enum(['on', 'off']).default('on'),
@@ -43,9 +43,11 @@ const config = z
 
 // Three pools, so no request can deadlock the app. The executor holds a connection from `pool` for
 // the whole transaction, and inside it calls can() (the PIP reads the DB) and, for app/agent
-// registration, Better Auth. If those shared `pool`, N concurrent requests holding N connections
-// would each wait forever for an (N+1)th. PIP and Better Auth only borrow per query, never across an
-// await on another pool, so their pools always drain. The timeout turns any future cycle into errors.
+// registration, Better Auth's OAuth provider. If those shared `pool`, N concurrent requests holding N
+// connections would each wait forever for an (N+1)th. PIP and Better Auth only borrow per query,
+// never across an await on another pool, so their pools always drain. The timeout turns any future
+// cycle into errors. Better Auth's organization writes take no connection at all: they run on the
+// request's own transaction connection (identity.tenancyFor).
 const poolOpts = { connectionString: config.DATABASE_URL, connectionTimeoutMillis: 10_000 }
 const pool = new pg.Pool({ ...poolOpts, max: 20 })
 const pipPool = new pg.Pool({ ...poolOpts, max: 10 })
@@ -85,7 +87,19 @@ const registry = buildRegistry(
   agentActions({ clients: identity }),
   meActions(),
 )
-const executor = makeExecutor({ db, authz, registry })
+// The request's transaction: Drizzle and Better Auth's organization adapter on one connection, so a
+// merchant/member/invitation change and the app's rows (assignments, outbox) commit together.
+const transact: Transact = async (fn) => {
+  let after: (() => Promise<void>) | undefined
+  const out = await withTransaction(pool, (tx, client) => {
+    const t = identity.tenancyFor(client)
+    after = t.afterCommit
+    return fn(tx, t.port)
+  })
+  await after?.()
+  return out
+}
+const executor = makeExecutor({ db, transact, authz, registry })
 
 const testMode = config.TEST_MODE === '1' && !!config.TEST_SECRET
 const testUserInput = z.object({
@@ -127,4 +141,4 @@ const app = buildHttp({
     : undefined,
 })
 
-serve({ fetch: app.fetch, port: config.PORT }, (info) => console.log(`stack c app on :${info.port} (${registry.size} actions)`))
+serve({ fetch: app.fetch, port: config.PORT }, (info) => console.log(`stack d app on :${info.port} (${registry.size} actions)`))

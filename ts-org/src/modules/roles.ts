@@ -3,7 +3,8 @@ import { and, eq } from 'drizzle-orm'
 import { z } from 'zod'
 import type { Queryable, Tx } from '../db/client.js'
 import { newId } from '../db/ids.js'
-import { MAX_CENTS, members, merchants, roleAssignments, roles, stores } from '../db/schema.js'
+import { member, organization as merchants } from '../db/idp-tables.js'
+import { MAX_CENTS, roleAssignments, roles, stores } from '../db/schema.js'
 import { defineAction, type Can } from '../kernel/action.js'
 import type { Resource } from '../kernel/authz.js'
 import { SYSTEM_ROLES, isGrantable, systemRole } from '../kernel/catalog.js'
@@ -166,8 +167,8 @@ export function roleActions() {
       await guard(can, role, at)
       const [m] = await tx
         .select()
-        .from(members)
-        .where(and(eq(members.userId, i.userId), eq(members.merchantId, i.merchantId)))
+        .from(member)
+        .where(and(eq(member.userId, i.userId), eq(member.organizationId, i.merchantId)))
       if (!m) throw invalid('not_member', 'user is not a member of this merchant')
       const [dup] = await tx
         .select({ id: roleAssignments.id })

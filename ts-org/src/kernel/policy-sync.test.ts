@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 import { GRANTABLE, NEVER_FOR_APPS } from './catalog.js'
 
-const dir = fileURLToPath(new URL('../../../stacks/c/cerbos/policies/', import.meta.url))
+const dir = fileURLToPath(new URL('../../../stacks/d/cerbos/policies/', import.meta.url))
 const policy = (f: string) => readFileSync(dir + f, 'utf8')
 const sorted = (xs: Iterable<string>) => [...new Set(xs)].sort()
 

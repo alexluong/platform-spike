@@ -24,10 +24,14 @@ export function agentActions(deps: { clients: ClientRegistry }) {
       if (!principal.merchantId) throw forbidden('forbidden', 'not a member of any merchant')
       return { action: 'agent.register', resource: merchantResource(principal.merchantId) }
     },
-    async run({ tx, principal, emit }, i) {
+    async run({ tx, idp, principal, emit }, i) {
+      // The client is created outside this transaction (Better Auth's OAuth provider writes on its
+      // own connection); the agent row and the client's link to the organization (what the IdP's
+      // token policy follows on suspension) commit together below.
       const c = await deps.clients.createClient(i.name, principal.credential)
       const id = newId('agent')
       await tx.insert(agents).values({ id, merchantId: principal.merchantId!, createdBy: principal.id, name: i.name, clientId: c.clientId })
+      await idp.attachClient(c.clientId, principal.merchantId!)
       emit({ type: 'agent.registered', agentId: id })
       return { id, clientId: c.clientId, clientSecret: c.clientSecret }
     },

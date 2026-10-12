@@ -4,6 +4,7 @@ import type { z } from 'zod'
 import type { Queryable, Tx } from '../db/client.js'
 import type { Action, Authorizer, Decision, Resource } from './authz.js'
 import type { Principal, PrincipalKind } from './principal.js'
+import type { Tenancy } from './tenancy.js'
 
 /** One engine check the executor must pass before `run`. */
 export interface Check {
@@ -27,6 +28,9 @@ export interface RunCtx {
   principal: Principal
   tx: Tx
   can: Can
+  /** The IdP's tenancy side (organizations, members, invitations), bound to `tx`: its writes commit
+   *  or roll back with the action's own. */
+  idp: Tenancy
   /** Record a domain event in the outbox, committed with the change. */
   emit(payload: Record<string, unknown>): void
 }
