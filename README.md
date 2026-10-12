@@ -63,7 +63,7 @@ Code: `go/internal/modules/platform`, `ts/src/modules/platform.ts`.
 
 ### Chapter 2: System roles
 Every merchant gets four fixed roles: owner, admin, developer, staff. A staff member can add a product but can't create roles. The role catalog is the list of **actions** (`product.create`, `order.refund`, …); a role is a set of them.
-Code: the catalog in `go/internal/core/registry.go` and `ts/src/kernel/catalog.ts`; every request runs through one executor (`go/internal/core/executor.go`, `ts/src/kernel/executor.ts`).
+Code: the catalog in `go/internal/perm/perm.go` and `ts/src/kernel/catalog.ts` (actions register in `go/internal/core/registry.go`); every request runs through one executor (`go/internal/core/executor.go`, `ts/src/kernel/executor.ts`).
 
 ### Chapter 3: Orders, payments, delivery
 A customer orders; the owner captures payment and ships. A shipment can't move backwards (409). A customer trying to capture gets 403, not 409: **permission is checked before business rules**, so a caller without rights learns nothing about the order's state. Customers are never put in the authorization engine; "my orders" is a plain SQL filter.
