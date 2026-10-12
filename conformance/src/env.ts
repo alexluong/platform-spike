@@ -1,10 +1,11 @@
 // Environment for the suite. See README.md.
-export type StackName = 'a' | 'b' | 'c'
+export const stackNames = ['a', 'b', 'c', 'd', 'e', 'a2'] as const
+export type StackName = (typeof stackNames)[number]
 
 function stackFromEnv(): StackName {
   const s = (process.env.STACK ?? '').trim()
-  if (s === 'a' || s === 'b' || s === 'c') return s
-  throw new Error(`STACK must be one of a|b|c (got ${JSON.stringify(s)}). Example: STACK=a HOST=cs-ws pnpm test`)
+  if ((stackNames as readonly string[]).includes(s)) return s as StackName
+  throw new Error(`STACK must be one of ${stackNames.join('|')} (got ${JSON.stringify(s)}). Example: STACK=a HOST=cs-ws pnpm test`)
 }
 
 export const env = {
