@@ -53,9 +53,9 @@ func (m *Module) createMerchant(ctx context.Context, r *core.Req) (any, error) {
 	if in.Name == "" || in.OwnerUserID == "" {
 		return nil, core.BadInput("name and ownerUserId are required")
 	}
-	var kind string
+	var kind, subject string
 	var current *string
-	err := r.Tx.QueryRow(ctx, `SELECT kind, merchant_id FROM users WHERE id=$1 FOR UPDATE`, in.OwnerUserID).Scan(&kind, &current)
+	err := r.Tx.QueryRow(ctx, `SELECT kind, merchant_id, idp_subject FROM users WHERE id=$1 FOR UPDATE`, in.OwnerUserID).Scan(&kind, &current, &subject)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, core.E(http.StatusBadRequest, "invalid_input", "owner user not found")
 	} else if err != nil {
@@ -84,6 +84,9 @@ func (m *Module) createMerchant(ctx context.Context, r *core.Req) (any, error) {
 	}
 	if err := r.Emit(ctx, authz.Event{Type: authz.EvAssignmentCreated, MerchantID: mer.ID, AssignmentID: aid, UserID: in.OwnerUserID,
 		RoleID: perm.RoleOwner, ScopeType: "merchant", ScopeID: mer.ID}); err != nil {
+		return nil, err
+	}
+	if err := r.Emit(ctx, authz.Event{Type: authz.EvMemberAdded, MerchantID: mer.ID, UserID: in.OwnerUserID, Subject: subject}); err != nil {
 		return nil, err
 	}
 	return mer, nil
@@ -146,7 +149,7 @@ func (m *Module) registerApp(ctx context.Context, r *core.Req) (any, error) {
 		}
 	}
 	id := db.NewID("app")
-	c, err := m.IdP.CreateClient(ctx, id)
+	c, err := m.IdP.CreateClient(ctx, id, "")
 	if err != nil {
 		return nil, err
 	}

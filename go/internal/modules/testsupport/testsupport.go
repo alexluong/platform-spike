@@ -80,7 +80,7 @@ func (m *Module) createUser(ctx context.Context, r *core.Req) (any, error) {
 	if exists {
 		return nil, core.Conflict("email_taken")
 	}
-	sub, err := m.IdP.CreateUser(ctx, in.Email, in.Password)
+	sub, err := m.IdP.CreateUser(ctx, in.Email, in.Password, in.Kind)
 	if err != nil {
 		return nil, err
 	}

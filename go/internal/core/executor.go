@@ -62,9 +62,20 @@ type Querier interface {
 	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
 }
 
-// Drainer drains pending outbox rows to the authz engine.
+// Route is where one outbox row goes: a consumer (the authz engine, an identity sync)
+// and a partition key (the merchant; consumers that order per merchant drain by it).
+type Route struct {
+	Consumer  string
+	Partition string
+}
+
+// Drainer is the outbox: it routes events to consumers and drains pending rows.
 type Drainer interface {
-	Drain(ctx context.Context) error
+	// Routes lists one row per consumer that takes this event.
+	Routes(ev authz.Event) []Route
+	// Drain applies the pending rows of these routes (and anything older queued before
+	// them in the same consumer/partition).
+	Drain(ctx context.Context, written []Route) error
 }
 
 // Executor runs every action: authenticate → resolve → can() → run → outbox in the same tx → drain.
@@ -87,7 +98,7 @@ type Req struct {
 	Now    time.Time
 
 	exec      *Executor
-	emitted   int
+	emitted   []Route
 	auditDone bool
 }
 
@@ -104,16 +115,19 @@ func (r *Req) Decode(v any) error {
 	return nil
 }
 
-// Emit writes an outbox row in the request's transaction.
+// Emit writes the event to the outbox in the request's transaction, one row per
+// consumer that takes it.
 func (r *Req) Emit(ctx context.Context, ev authz.Event) error {
 	b, err := json.Marshal(ev)
 	if err != nil {
 		return err
 	}
-	if _, err := r.Tx.Exec(ctx, `INSERT INTO outbox(event) VALUES ($1)`, b); err != nil {
-		return err
+	for _, rt := range r.exec.Relay.Routes(ev) {
+		if _, err := r.Tx.Exec(ctx, `INSERT INTO outbox(event, consumer, partition_key) VALUES ($1,$2,$3)`, b, rt.Consumer, rt.Partition); err != nil {
+			return err
+		}
+		r.emitted = append(r.emitted, rt)
 	}
-	r.emitted++
 	return nil
 }
 
@@ -343,10 +357,10 @@ func (e *Executor) run(ctx context.Context, op Op, hr *http.Request) (any, error
 	if err := tx.Commit(ctx); err != nil {
 		return nil, err
 	}
-	if r.emitted > 0 {
+	if len(r.emitted) > 0 {
 		// Drain our own rows (and anything older) before responding, so the next
 		// request sees the change. On failure the background relay retries.
-		if err := e.Relay.Drain(ctx); err != nil {
+		if err := e.Relay.Drain(ctx, r.emitted); err != nil {
 			e.Log.Warn("outbox drain failed; relay will retry", "err", err)
 		}
 	}

@@ -240,6 +240,9 @@ func (c *Client) Apply(ctx context.Context, ev authz.Event) error {
 func (c *Client) apply(ctx context.Context, ev authz.Event) error {
 	platform := obj("platform", "main")
 	switch ev.Type {
+	case authz.EvMemberAdded, authz.EvMemberRemoved, authz.EvAgentRegistered:
+		return nil // identity facts: membership reaches the engine as assignments
+
 	case authz.EvMerchantCreated:
 		m := obj("merchant", ev.MerchantID)
 		return c.write(ctx, touch(rel(m, "platform", subj("platform", "main", "")), rel(m, "any_user", subj("user", "*", ""))))

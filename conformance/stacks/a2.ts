@@ -1,6 +1,4 @@
 // Stack a2: Go app (from a) + Zitadel with one organization per merchant + SpiceDB. SPEC §10, §15.
-// STARTING POINT: a copy of stacks/a.ts with the ports changed (app 8088, Zitadel 8089). The stack's
-// builder adjusts it to the real login path (e.g. org-scoped login, org scopes in the token request).
 // features: ['idp-tenancy'] opts into tests/idp-tenancy.test.ts (SPEC §15.2, §15.3).
 //
 // loginUser: OIDC authorization code + PKCE, driven headless the way Zitadel's own
@@ -8,7 +6,12 @@
 // with an auth request id; the driver, holding the IAM_LOGIN_CLIENT token, creates a
 // session with a password check (Session API v2) and finalizes the auth request
 // (OIDC service v2), then exchanges the code at the token endpoint.
-// loginClient: client_credentials at the token endpoint (machine users).
+// The finalize step is where Zitadel refuses a suspended merchant's people: the project
+// checks authorization on authentication, and suspension deactivates their authorizations
+// (Errors.User.GrantRequired). The access token carries the member role with the merchant's
+// organization once the user has joined (the app uses it as an extra tenant check).
+// loginClient: client_credentials at the token endpoint (machine users). Agents live in their
+// merchant's organization; a deactivated organization refuses their tokens (Errors.User.NotActive).
 import { createHash, randomBytes } from 'node:crypto'
 import type { StackDriver } from '../src/driver'
 import { env } from '../src/env'
@@ -72,7 +75,8 @@ async function jsonOrThrow<T>(res: Response, what: string): Promise<T> {
 
 function scope(cfg: DriverConfig, base: string): string {
   // The project audience scope puts the project id in `aud`; the app requires it.
-  return `${base} urn:zitadel:iam:org:project:id:${cfg.projectId}:aud`
+  // resourceowner: the user's organization in the token (an agent's merchant).
+  return `${base} urn:zitadel:iam:org:project:id:${cfg.projectId}:aud urn:zitadel:iam:user:resourceowner`
 }
 
 const driver: StackDriver = {
@@ -155,7 +159,7 @@ const driver: StackDriver = {
         headers: { 'Content-Type': 'application/x-www-form-urlencoded', Authorization: `Basic ${basic}` },
         body: new URLSearchParams({ grant_type: 'client_credentials', scope: scope(cfg, 'openid') }),
       })
-      if (res.status === 400 && attempt < 20) {
+      if ((res.status === 400 || res.status === 404) && attempt < 20) {
         const text = await res.clone().text()
         if (text.includes('NotExisting') || text.includes('NotFound') || text.includes('client not found')) {
           await new Promise((r) => setTimeout(r, 250))

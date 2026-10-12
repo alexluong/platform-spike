@@ -35,7 +35,18 @@ func (a *Authenticator) Authenticate(ctx context.Context, header string) (*Princ
 	if err != nil {
 		return nil, ErrUnauthenticated
 	}
-	return LookupPrincipal(ctx, a.DB, t.Subject)
+	p, err := LookupPrincipal(ctx, a.DB, t.Subject)
+	if err != nil {
+		return nil, err
+	}
+	// A tenant claim in the token (IdPs with organizations) is an extra check, never the
+	// source: membership comes from the app's records. A token minted for another merchant
+	// than the one the caller belongs to now is stale: log in again. No claim, no check
+	// (tokens from before the user joined, IdPs without tenancy).
+	if t.MerchantID != "" && p.MerchantID != "" && t.MerchantID != p.MerchantID {
+		return nil, ErrUnauthenticated
+	}
+	return p, nil
 }
 
 // LookupPrincipal finds the user, app or agent whose IdP subject is sub.

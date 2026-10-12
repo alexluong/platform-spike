@@ -416,6 +416,9 @@ func permanent(err error) bool {
 
 func (c *Client) apply(ctx context.Context, ev authz.Event) error {
 	switch ev.Type {
+	case authz.EvMemberAdded, authz.EvMemberRemoved, authz.EvAgentRegistered:
+		return nil // identity facts: membership reaches the engine as assignments
+
 	case authz.EvMerchantCreated:
 		m := ref("merchant", ev.MerchantID)
 		return c.write(ctx, []client.ClientTupleKey{tk(m, "platform", "platform:main"), tk(m, "any_user", "user:*")}, nil)
