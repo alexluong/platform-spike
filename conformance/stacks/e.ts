@@ -1,7 +1,8 @@
-// Stack e: TypeScript (Hono) app, same app as d with SpiceDB: Better Auth + organization plugin + SpiceDB. SPEC §10, §15.
-// STARTING POINT: a copy of stacks/c.ts (Better Auth email/password sign-in with the bearer plugin;
-// OAuth provider client_credentials for apps/agents) with the port changed. The stack's builder
-// adjusts it to the real login path (e.g. if the organization plugin changes sign-in or tokens).
+// Stack e: the stack-d app with SpiceDB instead of Cerbos (AUTHZ=spicedb): Better Auth + organization
+// plugin + SpiceDB. SPEC §10, §15. Login path is d's (the authz engine changes neither sign-in nor
+// tokens): email/password with the session token from `set-auth-token` (bearer plugin); apps/agents
+// use the OAuth provider's client_credentials grant. Suspension (§15.3) is enforced inside Better
+// Auth, as in d.
 // features: ['idp-tenancy'] opts into tests/idp-tenancy.test.ts (SPEC §15.2, §15.3).
 import type { StackDriver } from '../src/driver'
 import { env } from '../src/env'

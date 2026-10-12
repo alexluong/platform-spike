@@ -71,11 +71,12 @@ export function platformActions() {
       if (!m) throw notFound('merchant')
       return { action: 'platform.break_glass', resource: merchantResource(m.id) }
     },
-    async run({ tx, principal }, input) {
+    async run({ tx, principal, emit }, input) {
       const expiresAt = new Date(Date.now() + input.minutes * 60_000)
       const id = newId('bg')
       await tx.insert(breakGlass).values({ id, actor: principal.id, merchantId: input.merchantId, reason: input.reason, expiresAt })
       await tx.insert(audit).values({ actor: principal.id, action: 'platform.break_glass', merchantId: input.merchantId })
+      emit({ type: 'break_glass.opened', breakGlassId: id })
       return { id, expiresAt: expiresAt.toISOString() }
     },
   })
