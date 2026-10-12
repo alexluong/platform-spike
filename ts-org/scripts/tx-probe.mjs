@@ -83,5 +83,32 @@ try {
 } finally {
   held3.release()
 }
+// Review-d: every other port call (status, member removal, invitation list/find/cancel, client
+// link) inside the app tx with Better Auth's pool held, then a rollback: nothing may stick.
+const held4 = await authPool.connect()
+let invC
+try {
+  await withTransaction(appPool, async (_tx, client) => {
+    const p = id.tenancyFor(client).port
+    invC = (await p.invite(org2, `probe3-${Date.now()}@example.com`, u.id)).id
+  })
+  await withTransaction(appPool, async (_tx, client) => {
+    const p = id.tenancyFor(client).port
+    await p.setStatus(org2, 'suspended')
+    await p.listInvitations(org2)
+    await p.findInvitation(invC)
+    await p.cancelInvitation(invC)
+    await p.removeMember(org2, u.id)
+    await p.attachClient('no-such-client', org2)
+    throw new Error('boom 2')
+  })
+} catch (e) {
+  console.log('status/remove/cancel/list/find/attach in tx, pool held:', e.message)
+} finally {
+  held4.release()
+}
+console.log('after rollback 2: status =', (await appPool.query('select status from organization where id = $1', [org2])).rows[0]?.status,
+  '; member rows =', Number((await appPool.query('select count(*) n from member where "organizationId" = $1', [org2])).rows[0].n),
+  '; invitation status =', (await appPool.query('select status from invitation where id = $1', [invC])).rows[0]?.status)
 await authPool.end(); await appPool.end()
 process.exit(0)
