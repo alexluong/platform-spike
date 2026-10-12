@@ -122,6 +122,11 @@ func (c *Client) apply(ctx context.Context, ev authz.Event) error {
 		if err := c.rpc(ctx, "zitadel.org.v2.OrganizationService/"+method, map[string]any{"organizationId": mid}, nil); err != nil && !isCode(err, "failed_precondition") {
 			return err // failed_precondition: already in that state
 		}
+		// Token issuance reads the org's state twice: the event store (immediate) and the
+		// userinfo projection (lags). Wait for the projection so the next login sees it.
+		if err := c.waitOrgState(ctx, mid, active); err != nil {
+			return err
+		}
 		members, err := c.authorizations(ctx, nil, mid)
 		if err != nil {
 			return err
@@ -140,7 +145,8 @@ func (c *Client) apply(ctx context.Context, ev authz.Event) error {
 		if err != nil && !isCode(err, "failed_precondition") { // already active
 			return err
 		}
-		return nil
+		// Token issuance needs the user active in the projection too (else "User.NotFound").
+		return c.waitUserActive(ctx, ev.Subject)
 	}
 	return nil
 }
@@ -264,6 +270,58 @@ func retryLag(ctx context.Context, f func() error) error {
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-time.After(100 * time.Millisecond):
+		}
+	}
+}
+
+// waitOrgState polls the org projection until the org is (in)active (10 s, then transient).
+func (c *Client) waitOrgState(ctx context.Context, org string, active bool) error {
+	want := "ORGANIZATION_STATE_INACTIVE"
+	if active {
+		want = "ORGANIZATION_STATE_ACTIVE"
+	}
+	return poll(ctx, "org "+org+" "+want, func() (bool, error) {
+		var out struct {
+			Result []struct {
+				State string `json:"state"`
+			} `json:"result"`
+		}
+		err := c.rpc(ctx, "zitadel.org.v2.OrganizationService/ListOrganizations",
+			map[string]any{"queries": []any{map[string]any{"idQuery": map[string]any{"id": org}}}}, &out)
+		return err == nil && len(out.Result) == 1 && out.Result[0].State == want, err
+	})
+}
+
+// waitUserActive polls the user projection until the user is active.
+func (c *Client) waitUserActive(ctx context.Context, userID string) error {
+	return poll(ctx, "user "+userID+" active", func() (bool, error) {
+		var out struct {
+			User struct {
+				State string `json:"state"`
+			} `json:"user"`
+		}
+		err := c.rpc(ctx, "zitadel.user.v2.UserService/GetUserByID", map[string]any{"userId": userID}, &out)
+		return err == nil && out.User.State == "USER_STATE_ACTIVE", err
+	})
+}
+
+func poll(ctx context.Context, what string, f func() (bool, error)) error {
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		ok, err := f()
+		if ok {
+			return nil
+		}
+		if time.Now().After(deadline) {
+			if err == nil {
+				err = fmt.Errorf("zitadel: projection did not catch up in 10s (%s)", what)
+			}
+			return err
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(50 * time.Millisecond):
 		}
 	}
 }

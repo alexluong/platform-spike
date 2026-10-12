@@ -159,7 +159,7 @@ const driver: StackDriver = {
         headers: { 'Content-Type': 'application/x-www-form-urlencoded', Authorization: `Basic ${basic}` },
         body: new URLSearchParams({ grant_type: 'client_credentials', scope: scope(cfg, 'openid') }),
       })
-      if (res.status === 400 && attempt < 20) {
+      if ((res.status === 400 || res.status === 404) && attempt < 20) {
         const text = await res.clone().text()
         if (text.includes('NotExisting') || text.includes('NotFound') || text.includes('client not found')) {
           await new Promise((r) => setTimeout(r, 250))
