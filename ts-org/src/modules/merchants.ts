@@ -51,7 +51,7 @@ export function merchantActions() {
       const [existing] = await tx.select({ id: member.id }).from(member).where(eq(member.userId, u.id))
       if (existing) throw conflict('already_member', 'user already belongs to a merchant')
       await idp.addMember(i.merchantId, u.id) // the unique index on member(userId) closes the race
-      emit({ type: 'member.added', userId: u.id })
+      emit({ type: 'member.added', userId: u.id, merchantId: i.merchantId })
       return { userId: u.id, merchantId: i.merchantId }
     },
   })
@@ -81,7 +81,7 @@ export function merchantActions() {
       await assertNotLastOwner(tx, i.merchantId, i.userId)
       await tx.delete(roleAssignments).where(and(eq(roleAssignments.userId, i.userId), eq(roleAssignments.merchantId, i.merchantId)))
       if (!(await idp.removeMember(i.merchantId, i.userId))) throw notFound('member')
-      emit({ type: 'member.removed', userId: i.userId })
+      emit({ type: 'member.removed', userId: i.userId, merchantId: i.merchantId })
       return null
     },
   })
@@ -136,7 +136,8 @@ export function merchantActions() {
       const [existing] = await tx.select({ id: member.id }).from(member).where(eq(member.userId, principal.id))
       if (existing) throw conflict('already_member', 'user already belongs to a merchant')
       const { organizationId } = await idp.acceptInvitation(i.invitationId, principal.credential)
-      emit({ type: 'invitation.accepted', invitationId: i.invitationId, userId: principal.id })
+      // same event as a direct add: an engine that stores membership (stack e) relays it the same way
+      emit({ type: 'member.added', userId: principal.id, merchantId: organizationId, invitationId: i.invitationId })
       return { merchantId: organizationId }
     },
   })
