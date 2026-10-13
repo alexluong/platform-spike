@@ -116,7 +116,7 @@ const registry = buildRegistry(
 )
 // The request's transaction: Drizzle and Better Auth's organization adapter on one connection, so a
 // merchant/member/invitation change and the app's rows (assignments, outbox) commit together.
-// With a relay, a transaction that wrote anything settles the outbox after commit (its own rows
+// With a relay, a transaction that queued outbox rows settles the outbox after commit (its own rows
 // included) before the response: the next request sees the change (read-your-writes).
 const transact: Transact = async (fn) => {
   let after: (() => Promise<void>) | undefined
@@ -125,7 +125,14 @@ const transact: Transact = async (fn) => {
     const t = identity.tenancyFor(client)
     after = t.afterCommit
     const r = await fn(tx, t.port)
-    if (relay) wrote = (await client.query<{ w: boolean }>('SELECT pg_current_xact_id_if_assigned() IS NOT NULL AS w')).rows[0]!.w
+    // Settle only when this transaction queued outbox rows (its own pending rows: xmin = this tx).
+    // Any write is too broad: audit-only reads under break-glass would wait on the drain lock too.
+    if (relay)
+      wrote = (
+        await client.query<{ w: boolean }>(
+          'SELECT EXISTS (SELECT 1 FROM outbox WHERE processed_at IS NULL AND xmin = pg_current_xact_id_if_assigned()::xid) AS w',
+        )
+      ).rows[0]!.w
     return r
   })
   await after?.()
