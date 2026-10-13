@@ -135,6 +135,14 @@ From [`results/comparison.md`](results/comparison.md):
 
 Per stack: `results/{a,b,c}.md`; reviews: `results/review-{a,b,c}.md`.
 
+### Round 2: the identity provider owns tenancy (spec §15)
+
+Stacks `d` (TS + Better Auth organization plugin + Cerbos, 8086), `e` (`d` with SpiceDB, 8087) and `a2` (Go + one Zitadel organization per merchant + SpiceDB, 8088), plus 30 opt-in `idp-tenancy` tests (invitations, suspension at login). Run them like the others: `STACK=d|e|a2`. From [`results/comparison-round2.md`](results/comparison-round2.md):
+
+- **No, IdP-owned tenancy didn't make the spec cleaner.** Neither IdP could carry custom roles, and the app still needs membership in SQL. Better Auth's gain (one transaction for identity and app data) comes from being in-process and sharing the DB, not from the plugin; Zitadel added ~1000 lines and a second sync, removing none.
+- **Zitadel organizations are worth it only for per-merchant SSO or delegated user admin.**
+- **The TS engine swap (d → e) changed one module line**, but showed d's executor had let Cerbos decide deny reasons and audit markers. e's SpiceDB relay is the most correct one built (consistency token in the DB, call deadlines).
+
 ## 5. Reference
 
 **Running.** Nothing is bind-mounted, so a remote Docker host works like a local one.
