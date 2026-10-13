@@ -4,7 +4,7 @@ A mini Shopify, built on six identity + authorization stacks, all checked by one
 
 Read this top to bottom: what was built and why, then a guided tour you run yourself, then the reference.
 
-**Short on time?** Download [`docs/review.html`](docs/review.html) and open it in a browser: the review report (how it works, SpiceDB vs OpenFGA vs Cerbos with a custom role end to end, each stack's code and feel, quality, round 2, open decisions). The patterns being tested: [`docs/patterns.md`](docs/patterns.md). **New to authorization?** Start with [`docs/GUIDE.md`](docs/GUIDE.md): the ideas from zero (roles, scopes, Zanzibar relationships, policies, grants), then where each one lives in this code.
+**Short on time?** Download [`docs/review.html`](docs/review.html) and open it in a browser: the review report (how it works, SpiceDB vs OpenFGA vs Cerbos with a custom role end to end, each stack's code and feel, quality, round 2, open decisions). The patterns being tested: [`docs/patterns.md`](docs/patterns.md). **New to authorization?** Start with [`docs/GUIDE.md`](docs/GUIDE.md) (or the interactive version, [`docs/guide.html`](docs/guide.html), downloaded and opened in a browser): the ideas from zero (roles, scopes, Zanzibar relationships, policies, grants), then where each one lives in this code.
 
 ## 1. What was built, and why
 
@@ -169,5 +169,5 @@ ts/            TypeScript app for stack c
 ts-org/        TypeScript app for stacks d and e (Better Auth organization plugin; Cerbos or SpiceDB)
 stacks/<s>/    compose file, IdP and engine config, bootstrap; Cerbos policies for c
 results/       per-stack results, reviews, comparison.md (round 1), comparison-round2.md
-docs/          GUIDE.md (authz from zero + code map), review.html (the review report), patterns.md
+docs/          GUIDE.md + guide.html (authz from zero + code map), review.html (the review report), patterns.md
 ```
