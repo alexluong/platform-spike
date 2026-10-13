@@ -1,8 +1,10 @@
 # platform-spike
 
-A mini Shopify, built three times on different identity + authorization stacks, all checked by one black-box test suite. It exists to compare the stacks and test a set of architecture patterns before a real platform project. It is not a shop: no UI, fake payments, no email.
+A mini Shopify, built on six identity + authorization stacks, all checked by one black-box test suite. It exists to compare the stacks and test a set of architecture patterns before a real platform project. It is not a shop: no UI, fake payments, no email.
 
 Read this top to bottom: what was built and why, then a guided tour you run yourself, then the reference.
+
+**Short on time?** Download [`docs/review.html`](docs/review.html) and open it in a browser: the review report (how it works, SpiceDB vs OpenFGA vs Cerbos with a custom role end to end, each stack's code and feel, quality, round 2, open decisions). The patterns being tested: [`docs/patterns.md`](docs/patterns.md).
 
 ## 1. What was built, and why
 
@@ -148,22 +150,24 @@ Stacks `d` (TS + Better Auth organization plugin + Cerbos, 8086), `e` (`d` with 
 **Running.** Nothing is bind-mounted, so a remote Docker host works like a local one.
 
 ```sh
-docker compose -p ps-a --profile a up -d --build --wait     # or b / c (-p ps-b / ps-c)
+docker compose -p ps-a --profile a up -d --build --wait     # or b, c, d, e, a2 (-p ps-<stack>)
 docker compose -p ps-a --profile a down -v                  # stop and wipe
 ```
 
-- `HOST` must be a name this machine resolves to the Docker host (an ssh alias won't do).
+- `HOST` must be a name this machine resolves to the Docker host (an ssh alias won't do). Some defaults in code and compose name the original lab host; set `HOST`, `STACK_A_HOST` / `STACK_A2_HOST` / `STACK_B_HOST` for yours.
 - Stack `a`: Zitadel issues tokens for the exact host clients use (`STACK_A_HOST`); changing it needs `down -v`.
-- **Test mode is on** in all three compose files with a known secret (`/api/_test/users` creates any user, including platform admins), and stack `b` publishes Hydra's unauthenticated admin API. Don't expose these ports beyond a trusted network (spec §14 P5).
+- **Test mode is on** in every compose file with a known secret (`/api/_test/users` creates any user, including platform admins), and stack `b` publishes Hydra's unauthenticated admin API. Don't expose these ports beyond a trusted network (spec §14 P5).
 
 **Layout.**
 
 ```
-spec/SPEC.md   the contract (v2): rules, API, error codes, proposals (§14)
+spec/SPEC.md   the contract (v3): rules, API, error codes, proposals (§14), round 2 (§15)
 conformance/   test suite (tests/), the tour (tour/), login drivers per stack (stacks/),
                AMBIGUITIES.md (how the suite read spec v1)
-go/            Go app for stacks a and b; engine-specific code only in go/internal/adapters/
+go/            Go app for stacks a, b and a2; engine- and IdP-specific code only in go/internal/adapters/
 ts/            TypeScript app for stack c
+ts-org/        TypeScript app for stacks d and e (Better Auth organization plugin; Cerbos or SpiceDB)
 stacks/<s>/    compose file, IdP and engine config, bootstrap; Cerbos policies for c
-results/       per-stack results, reviews, comparison
+results/       per-stack results, reviews, comparison.md (round 1), comparison-round2.md
+docs/          review.html (the review report), patterns.md
 ```
