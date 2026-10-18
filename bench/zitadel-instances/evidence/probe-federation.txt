@@ -1,0 +1,21 @@
+# probe-federation 2026-10-18T19:48:33.664Z
+removed earlier shop instance 395702216377266179: 200
+S (shop) instance 395702242247733251; Shop user 395702245066305539 buyer@shop.test
+S issuer seen by the driver: http://shop.idp.internal:8080
+B 395702245250854915 (fb-mve8nbb4.idp.internal), C 395702247499001859 (fc-mve8nbb4.idp.internal)
+S app clientId=395702250200199171
+instance-level generic OIDC IdP "Shop" in B (395702250300796931) and C (395702250367905795), issuer http://shop.idp.internal:8080, autoLinking off
+  start intent at fb-mve8nbb4.idp.internal: authUrl host=shop.idp.internal:8080 redirect_uri=http://fb-mve8nbb4.idp.internal/idps/callback
+  retrieve intent: no linked user; idpInformation.userName=buyer@shop.test; addHumanUser suggestion: {"username":"buyer@shop.test","profile":{"givenName":"Test","familyName":"User","displayName":"Test User","preferredLanguage":"und"},"email":{"email":"buyer@shop.test","isVerified":true}}
+B first: OK auto-created + linked; tenant user 395702250921553923, external (S) sub 395702245066305539; id_token iss=http://fb-mve8nbb4.idp.internal sub=395702250921553923 email=undefined
+  start intent at fb-mve8nbb4.idp.internal: authUrl host=shop.idp.internal:8080 redirect_uri=http://fb-mve8nbb4.idp.internal/idps/callback
+B again: OK existing link; tenant user 395702250921553923, external (S) sub 395702245066305539; id_token iss=http://fb-mve8nbb4.idp.internal sub=395702250921553923 email=undefined
+  start intent at fc-mve8nbb4.idp.internal: authUrl host=shop.idp.internal:8080 redirect_uri=http://fc-mve8nbb4.idp.internal/idps/callback
+  retrieve intent: no linked user; idpInformation.userName=buyer@shop.test; addHumanUser suggestion: {"username":"buyer@shop.test","profile":{"givenName":"Test","familyName":"User","displayName":"Test User","preferredLanguage":"und"},"email":{"email":"buyer@shop.test","isVerified":true}}
+C first (same Shop user): OK auto-created + linked; tenant user 395702254780313603, external (S) sub 395702245066305539; id_token iss=http://fc-mve8nbb4.idp.internal sub=395702254780313603 email=undefined
+  start intent at fc-mve8nbb4.idp.internal: authUrl host=shop.idp.internal:8080 redirect_uri=http://fc-mve8nbb4.idp.internal/idps/callback
+C again: OK existing link; tenant user 395702254780313603, external (S) sub 395702245066305539; id_token iss=http://fc-mve8nbb4.idp.internal sub=395702254780313603 email=undefined
+B: link the same Shop identity to a 2nd user in another org (staff): 409 {"code":6, "message":"External IDP already taken (V3-DKcYh)", "details":[{"@type":"type.googleapis.com/zitadel.v1.ErrorDetail", "id":"V3-DKcYh", "message":"External IDP already taken"}]}
+B: local customer with the same email 395702256659361795: idp links=0
+
+done

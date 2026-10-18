@@ -1,0 +1,14 @@
+# probe-federation 2026-10-18T19:47:55.343Z
+S (shop) instance 395702177873555459; Shop user 395702180088147971 buyer@shop.test
+S issuer seen by the driver: http://shop.idp.internal:8080
+B 395702180205588483 (fb-mve8mhqn.idp.internal), C 395702181799424003 (fc-mve8mhqn.idp.internal)
+S app clientId=395702184030793731
+instance-level generic OIDC IdP "Shop" in B (395702184165011459) and C (395702184215343107), issuer http://shop.idp.internal:8080, autoLinking off
+B first: FAIL start intent: 500 {"code":2, "message":"OpenID Provider Configuration Discovery has failed\nGet \"http://shop.idp.internal:8080/.well-known/openid-configuration\": dial tcp 192.168.112.3:8080: address is denied by '192.168.0.0/16' ()", "details":[{"@type":"type.googleapis.com/z…
+B again: FAIL start intent: 500 {"code":2, "message":"OpenID Provider Configuration Discovery has failed\nGet \"http://shop.idp.internal:8080/.well-known/openid-configuration\": dial tcp 192.168.112.3:8080: address is denied by '192.168.0.0/16' ()", "details":[{"@type":"type.googleapis.com/z…
+C first (same Shop user): FAIL start intent: 500 {"code":2, "message":"OpenID Provider Configuration Discovery has failed\nGet \"http://shop.idp.internal:8080/.well-known/openid-configuration\": dial tcp 192.168.112.3:8080: address is denied by '192.168.0.0/16' ()", "details":[{"@type":"type.googleapis.com/z…
+C again: FAIL start intent: 500 {"code":2, "message":"OpenID Provider Configuration Discovery has failed\nGet \"http://shop.idp.internal:8080/.well-known/openid-configuration\": dial tcp 192.168.112.3:8080: address is denied by '192.168.0.0/16' ()", "details":[{"@type":"type.googleapis.com/z…
+B: link the same Shop identity to a 2nd user in another org (staff): 200 {"details":{"sequence":"3", "changeDate":"2026-10-18T19:48:01.590890Z", "resourceOwner":"395702180205654019"}}
+B: local customer with the same email 395702184768991235: idp links=0
+
+done
