@@ -81,73 +81,89 @@ async function okOrThrow(res: Response, what: string): Promise<string> {
   return text
 }
 
+/**
+ * The whole user login; returns Logto's token response. `clientId` and `resource` override the
+ * driver app and the API resource (`null`: no resource, i.e. an opaque access token), for
+ * negative token checks.
+ */
+export async function logtoLogin(
+  email: string,
+  password: string,
+  opts: { clientId?: string; resource?: string | null } = {},
+): Promise<{ access_token: string; id_token?: string }> {
+  const base = await config()
+  const cfg = { ...base, clientId: opts.clientId ?? base.clientId }
+  const resource = opts.resource === undefined ? base.resource : opts.resource
+  const jar = new Jar()
+  const verifier = b64url(randomBytes(32))
+  const challenge = b64url(createHash('sha256').update(verifier).digest())
+  const state = b64url(randomBytes(12))
+
+  // 1. Authorization request → sign-in page.
+  const q = new URLSearchParams({
+    client_id: cfg.clientId,
+    redirect_uri: cfg.redirectUri,
+    response_type: 'code',
+    scope: 'openid',
+    resource: resource ?? '',
+    code_challenge: challenge,
+    code_challenge_method: 'S256',
+    state,
+    prompt: 'login',
+  })
+  if (resource === null) q.delete('resource')
+  const auth = await http(`${cfg.endpoint}/oidc/auth?${q}`, jar)
+  if (auth.status !== 303) throw new Error(`logto authorize: expected 303, got ${auth.status} ${await auth.text()}`)
+
+  // 2–5. What the sign-in page does.
+  const api = (path: string, json?: unknown, method = 'POST') => http(`${cfg.endpoint}/api/experience${path}`, jar, { method, json })
+  await okOrThrow(await api('', { interactionEvent: 'SignIn' }, 'PUT'), 'start interaction')
+  const { verificationId } = JSON.parse(
+    await okOrThrow(await api('/verification/password', { identifier: { type: 'email', value: email }, password }), 'verify password'),
+  ) as { verificationId: string }
+  await okOrThrow(await api('/identification', { verificationId }), 'identify')
+  const { redirectTo } = JSON.parse(await okOrThrow(await api('/submit'), 'submit')) as { redirectTo: string }
+
+  // 6. Back to the provider until it redirects to the client with the code.
+  let next = new URL(redirectTo, cfg.endpoint)
+  for (let hop = 0; !next.href.startsWith(cfg.redirectUri); hop++) {
+    if (hop > 6) throw new Error(`logto: too many redirects (at ${next})`)
+    const res = await http(next.href, jar)
+    const location = res.headers.get('location')
+    if (res.status < 300 || res.status >= 400 || !location) {
+      throw new Error(`logto ${next.pathname}: expected redirect, got ${res.status} ${await res.text()}`)
+    }
+    next = new URL(location, cfg.endpoint)
+  }
+  const code = next.searchParams.get('code')
+  if (!code || next.searchParams.get('state') !== state) throw new Error(`logto callback: bad ${next}`)
+
+  // 7. Code + PKCE verifier → JWT access token for the API resource.
+  const tok = JSON.parse(
+    await okOrThrow(
+      await http(`${cfg.endpoint}/oidc/token`, jar, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({
+          grant_type: 'authorization_code',
+          code,
+          redirect_uri: cfg.redirectUri,
+          client_id: cfg.clientId,
+          code_verifier: verifier,
+          ...(resource === null ? {} : { resource }),
+        }),
+      }),
+      'token (authorization_code)',
+    ),
+  ) as { access_token: string; id_token?: string }
+  return tok
+}
+
 const driver: StackDriver = {
   baseUrl,
 
   async loginUser(email, password) {
-    const cfg = await config()
-    const jar = new Jar()
-    const verifier = b64url(randomBytes(32))
-    const challenge = b64url(createHash('sha256').update(verifier).digest())
-    const state = b64url(randomBytes(12))
-
-    // 1. Authorization request → sign-in page.
-    const q = new URLSearchParams({
-      client_id: cfg.clientId,
-      redirect_uri: cfg.redirectUri,
-      response_type: 'code',
-      scope: 'openid',
-      resource: cfg.resource,
-      code_challenge: challenge,
-      code_challenge_method: 'S256',
-      state,
-      prompt: 'login',
-    })
-    const auth = await http(`${cfg.endpoint}/oidc/auth?${q}`, jar)
-    if (auth.status !== 303) throw new Error(`logto authorize: expected 303, got ${auth.status} ${await auth.text()}`)
-
-    // 2–5. What the sign-in page does.
-    const api = (path: string, json?: unknown, method = 'POST') => http(`${cfg.endpoint}/api/experience${path}`, jar, { method, json })
-    await okOrThrow(await api('', { interactionEvent: 'SignIn' }, 'PUT'), 'start interaction')
-    const { verificationId } = JSON.parse(
-      await okOrThrow(await api('/verification/password', { identifier: { type: 'email', value: email }, password }), 'verify password'),
-    ) as { verificationId: string }
-    await okOrThrow(await api('/identification', { verificationId }), 'identify')
-    const { redirectTo } = JSON.parse(await okOrThrow(await api('/submit'), 'submit')) as { redirectTo: string }
-
-    // 6. Back to the provider until it redirects to the client with the code.
-    let next = new URL(redirectTo, cfg.endpoint)
-    for (let hop = 0; !next.href.startsWith(cfg.redirectUri); hop++) {
-      if (hop > 6) throw new Error(`logto: too many redirects (at ${next})`)
-      const res = await http(next.href, jar)
-      const location = res.headers.get('location')
-      if (res.status < 300 || res.status >= 400 || !location) {
-        throw new Error(`logto ${next.pathname}: expected redirect, got ${res.status} ${await res.text()}`)
-      }
-      next = new URL(location, cfg.endpoint)
-    }
-    const code = next.searchParams.get('code')
-    if (!code || next.searchParams.get('state') !== state) throw new Error(`logto callback: bad ${next}`)
-
-    // 7. Code + PKCE verifier → JWT access token for the API resource.
-    const tok = JSON.parse(
-      await okOrThrow(
-        await http(`${cfg.endpoint}/oidc/token`, jar, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-          body: new URLSearchParams({
-            grant_type: 'authorization_code',
-            code,
-            redirect_uri: cfg.redirectUri,
-            client_id: cfg.clientId,
-            code_verifier: verifier,
-            resource: cfg.resource,
-          }),
-        }),
-        'token (authorization_code)',
-      ),
-    ) as { access_token: string }
-    return tok.access_token
+    return (await logtoLogin(email, password)).access_token
   },
 
   async loginClient(clientId, clientSecret) {
