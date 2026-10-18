@@ -1,0 +1,72 @@
+# Zitadel instances bench (round 4, TASK-62): one Zitadel v4 deployment + Postgres, nothing else.
+# Run through ./up.sh (generates the System API key and passes it in), not directly:
+#   DOCKER_HOST=ssh://cs-ws ./up.sh            # start (or restart with new env)
+#   DOCKER_HOST=ssh://cs-ws docker compose -p ps-zbench -f compose.yaml down -v
+# Published: Zitadel on cs-ws:8099. Default instance domain = ZBENCH_HOST (cs-ws.lab.alexluong.com);
+# every other instance is reached with `x-zitadel-instance-host: <internal name>` (no DNS).
+# Dev-only secrets below are placeholders for a throwaway local stack.
+
+services:
+  zb-postgres:
+    image: postgres:17-alpine
+    command: ["postgres", "-c", "max_connections=200", "-c", "shared_buffers=512MB",
+              "-c", "track_counts=on", "-c", "track_commit_timestamp=on"]
+    environment:
+      POSTGRES_PASSWORD: zbench-dev-pw
+      POSTGRES_DB: zitadel
+    volumes: [zb-pg:/var/lib/postgresql/data]
+    networks: [zb-net]
+    mem_limit: 2g
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d zitadel"]
+      interval: 3s
+      timeout: 5s
+      retries: 30
+
+  zb-zitadel:
+    image: ghcr.io/zitadel/zitadel:v4.19.5
+    user: "0"
+    command: start-from-init --masterkey "MasterkeyNeedsToHave32Characters" --tlsMode disabled
+    environment:
+      ZITADEL_PORT: "8080"
+      ZITADEL_EXTERNALDOMAIN: ${ZBENCH_HOST:-cs-ws.lab.alexluong.com}
+      ZITADEL_EXTERNALPORT: "8099"
+      ZITADEL_EXTERNALSECURE: "false"
+      ZITADEL_TLS_ENABLED: "false"
+      ZITADEL_DATABASE_POSTGRES_DSN: postgresql://postgres:zbench-dev-pw@zb-postgres:5432/zitadel?sslmode=disable
+      ZITADEL_DATABASE_POSTGRES_MAXOPENCONNS: ${ZBENCH_MAXOPENCONNS:-30}
+      ZITADEL_DATABASE_POSTGRES_MAXIDLECONNS: ${ZBENCH_MAXIDLECONNS:-10}
+      ZITADEL_FIRSTINSTANCE_ORG_HUMAN_PASSWORDCHANGEREQUIRED: "false"
+      # Dev: low bcrypt cost (as stack a), so logins measure Zitadel, not bcrypt.
+      ZITADEL_SYSTEMDEFAULTS_PASSWORDHASHER_HASHER_COST: "6"
+      ZITADEL_FIRSTINSTANCE_PATPATH: /zitadel/bootstrap/admin.pat
+      ZITADEL_FIRSTINSTANCE_ORG_MACHINE_MACHINE_USERNAME: zbench-admin
+      ZITADEL_FIRSTINSTANCE_ORG_MACHINE_MACHINE_NAME: zbench-admin
+      ZITADEL_FIRSTINSTANCE_ORG_MACHINE_PAT_EXPIRATIONDATE: "2099-01-01T00:00:00Z"
+      ZITADEL_DEFAULTINSTANCE_FEATURES_LOGINV2_REQUIRED: "true"
+      # System API user (JWT profile, RS256); public key from ./up.sh.
+      ZITADEL_SYSTEMAPIUSERS: '{"zbench":{"KeyData":"${ZBENCH_SYSTEM_KEY:?run ./up.sh}"}}'
+      # Bench knobs (defaults = Zitadel defaults).
+      ZITADEL_PROJECTIONS_HANDLEACTIVEINSTANCES: ${ZBENCH_HANDLEACTIVEINSTANCES:-0s}
+      ZITADEL_PROJECTIONS_MAXACTIVEINSTANCES: ${ZBENCH_MAXACTIVEINSTANCES:-0}
+      ZITADEL_CACHES_CONNECTORS_MEMORY_ENABLED: ${ZBENCH_MEMCACHE:-false}
+      ZITADEL_CACHES_INSTANCE_CONNECTOR: ${ZBENCH_INSTANCECACHE:-}
+    ports: ["8099:8080"]
+    volumes: [zb-bootstrap:/zitadel/bootstrap]
+    networks: [zb-net]
+    mem_limit: ${ZBENCH_ZITADEL_MEM:-2g}
+    depends_on:
+      zb-postgres: {condition: service_healthy}
+    healthcheck:
+      test: ["CMD", "/app/zitadel", "ready"]
+      interval: 5s
+      timeout: 10s
+      retries: 120
+      start_period: 20s
+
+networks:
+  zb-net: {}
+
+volumes:
+  zb-pg: {}
+  zb-bootstrap: {}
