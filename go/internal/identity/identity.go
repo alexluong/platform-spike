@@ -20,6 +20,9 @@ type Token struct {
 	// MerchantID is the tenant the IdP put in the token (an organization claim), when it
 	// carries one. An extra tenant check only: membership still comes from the app's records
 	// (SPEC §2, §15.1). Empty for IdPs without tenancy and for tokens without the claim.
+	// Adapters with a pool per merchant (SPEC §16: i, h2) set it to the merchant of the pool
+	// that issued the token (from their directory, never a claim); the Authenticator then
+	// requires it for principals of a merchant's own pool (HomeMerchantID): load-bearing there.
 	MerchantID string
 }
 

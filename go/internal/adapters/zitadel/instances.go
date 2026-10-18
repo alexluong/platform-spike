@@ -589,23 +589,6 @@ func (x *Instances) provisionMerchant(ctx context.Context, mid string) error {
 	return nil
 }
 
-// authorizeStatus: the status of an authorization request at the pool (302 = login can start,
-// 429 = instance blocked), 0 on transport errors.
-func (x *Instances) authorizeStatus(ctx context.Context, p *Pool) int {
-	q := url.Values{"client_id": {p.ClientID}, "redirect_uri": {x.cfg.RedirectURI}, "response_type": {"code"}, "scope": {"openid"},
-		"code_challenge": {"E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"}, "code_challenge_method": {"S256"}}
-	hc := &http.Client{Timeout: 10 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
-	req, _ := http.NewRequestWithContext(ctx, "GET", x.z.Base+"/oauth/v2/authorize?"+q.Encode(), nil)
-	req.Header.Set("x-zitadel-instance-host", p.InstanceDomain)
-	req.Header.Set("x-zitadel-public-host", p.PublicHost)
-	resp, err := hc.Do(req)
-	if err != nil {
-		return 0
-	}
-	resp.Body.Close()
-	return resp.StatusCode
-}
-
 func (x *Instances) waitLoginReady(ctx context.Context, p *Pool) error {
 	q := url.Values{"client_id": {p.ClientID}, "redirect_uri": {x.cfg.RedirectURI}, "response_type": {"code"}, "scope": {"openid"},
 		"code_challenge": {"E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"}, "code_challenge_method": {"S256"}}
@@ -618,10 +601,13 @@ func (x *Instances) waitLoginReady(ctx context.Context, p *Pool) error {
 		resp, err := hc.Do(req)
 		if err == nil {
 			resp.Body.Close()
-			if resp.StatusCode == http.StatusFound || resp.StatusCode == http.StatusSeeOther {
+			// Ready = Zitadel sends the browser to the login UI. A redirect to the client with
+			// ?error=… is a 302 too, and not ready.
+			if (resp.StatusCode == http.StatusFound || resp.StatusCode == http.StatusSeeOther) &&
+				strings.Contains(resp.Header.Get("Location"), "/ui/v2/login/") {
 				return nil
 			}
-			last = resp.Status
+			last = resp.Status + " " + resp.Header.Get("Location")
 		} else {
 			last = err.Error()
 		}
@@ -680,10 +666,15 @@ func (x *Instances) blockMerchant(ctx context.Context, mid string, block bool) e
 	return nil
 }
 
-// Blocked: the directory's desired state (gateway check, not cached).
+// Blocked: the directory's desired state (gateway check, not cached). Fails closed: a
+// directory read error refuses the login rather than letting a suspended merchant's pool
+// through until Zitadel's own block catches up.
 func (x *Instances) blocked(ctx context.Context, p *Pool) bool {
 	var b bool
-	_ = x.db.QueryRow(ctx, `SELECT blocked FROM zitadel_pools WHERE pool=$1`, p.Key).Scan(&b)
+	if err := x.db.QueryRow(ctx, `SELECT blocked FROM zitadel_pools WHERE pool=$1`, p.Key).Scan(&b); err != nil {
+		x.log.Warn("gateway: block state unreadable, refusing", "pool", p.Key, "err", err)
+		return true
+	}
 	return b
 }
 

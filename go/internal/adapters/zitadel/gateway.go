@@ -19,6 +19,7 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"path"
 	"strings"
 	"time"
 )
@@ -49,6 +50,13 @@ func (x *Instances) Gateway(next http.Handler) http.Handler {
 		label, ok := strings.CutSuffix(strings.ToLower(hostname), suffix)
 		if !ok || strings.Contains(label, ".") {
 			next.ServeHTTP(w, r)
+			return
+		}
+		// Only clean, unencoded paths: the prefix allowlist below must see the path Zitadel will
+		// route. Zitadel's router answers /oauth/v2/../admin/... with a 301 to the cleaned path
+		// today (review-i probe), but the gateway shouldn't depend on that.
+		if r.URL.RawPath != "" || path.Clean(r.URL.Path) != r.URL.Path {
+			http.Error(w, "not found", http.StatusNotFound)
 			return
 		}
 		p, err := x.poolByLabel(r.Context(), label)

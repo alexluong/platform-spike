@@ -145,5 +145,7 @@ func (x *Instances) Verify(ctx context.Context, bearer string) (identity.Token, 
 	if cl.ClientID != p.ClientID && !machine {
 		return identity.Token{}, fmt.Errorf("%w: client %q not allowed for %s", identity.ErrInvalidToken, cl.ClientID, p.Key)
 	}
-	return identity.Token{Subject: subject(p.Key, tok.Subject)}, nil
+	// MerchantID: the merchant whose pool issued the token (directory, not a claim). The
+	// Authenticator accepts a tenant principal only with a token of its own merchant's pool.
+	return identity.Token{Subject: subject(p.Key, tok.Subject), MerchantID: p.MerchantID}, nil
 }

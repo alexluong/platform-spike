@@ -61,14 +61,29 @@ func (a *Authenticator) Authenticate(ctx context.Context, header string) (*Princ
 	if err != nil {
 		return nil, err
 	}
-	// A tenant claim in the token (IdPs with organizations) is an extra check, never the
-	// source: membership comes from the app's records. A token minted for another merchant
-	// than the one the caller belongs to now is stale: log in again. No claim, no check
-	// (tokens from before the user joined, IdPs without tenancy).
-	if t.MerchantID != "" && (p.MerchantID != "" || len(p.MerchantIDs) > 0) && !p.MemberOf(t.MerchantID) {
+	if !tokenFits(t, p) {
 		return nil, ErrUnauthenticated
 	}
 	return p, nil
+}
+
+// tokenFits: the token's tenant (if any) agrees with the principal.
+//   - A principal of a merchant's own pool (HomeMerchantID, SPEC §16.1) is accepted only with
+//     a token of that merchant's pool: pool-per-merchant adapters put the pool's merchant in
+//     t.MerchantID (from their directory, never a claim). Same rule as stack h2, so the shared
+//     core serves both.
+//   - A tenant claim in the token (IdPs with organizations) is an extra check, never the
+//     source: membership comes from the app's records. A token minted for another merchant
+//     than the one the caller belongs to now is stale: log in again. No claim, no check
+//     (tokens from before the user joined, IdPs without tenancy).
+func tokenFits(t identity.Token, p *Principal) bool {
+	if p.HomeMerchantID != "" && t.MerchantID != p.HomeMerchantID {
+		return false
+	}
+	if t.MerchantID != "" && p.HomeMerchantID == "" && (p.MerchantID != "" || len(p.MerchantIDs) > 0) && !p.MemberOf(t.MerchantID) {
+		return false
+	}
+	return true
 }
 
 // LookupPrincipal finds the user, app or agent whose IdP subject is sub.
