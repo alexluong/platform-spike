@@ -2,7 +2,7 @@
 
 Reviewed 2026-10-19 on branch `stack-f` (from e6b81f5). Read the spec (§10, §14 P7), `results/f.md`, `results/review-a.md` and `review-b.md` as checklists, `go/internal/adapters/logto`, the `case "logto"` in both `main.go`s, `stacks/f/`, `conformance/stacks/f.ts`. Probed the running stack from the Mac (through the edge and cs-ws's dev proxy) and from cs-ws itself (`127.0.0.1:8092`, to get past the dev proxy's Host routing), and the Management API from inside a Logto replica. Shared modules and kernel not re-reviewed (review-a).
 
-**Suite after fixes: 362/362** (30 idp-tenancy skipped), full run incl. the break-glass expiry, `MAX_WORKERS=2`, 205 s, stack rebuilt from this branch and cold-started from `down -v`, load 27→24 (peaks ~31). With `MAX_WORKERS=4` at load 27→42: 346/362, 16 timeouts. Every failure in every run was a 30 s test timeout during logins; no wrong answer. Runs before the fixes at the same load looked the same (330/362 at load 25–43, 31 timeouts + 1 grant-expiry test whose 2 s grant expired before the first request). `go test ./internal/adapters/logto` passes (new: `TestKeySetDropsDeletedKey`, `TestAPIRetriesWithFreshTokenOn401`).
+**Suite after fixes: 362/362** (30 idp-tenancy skipped), full run incl. the break-glass expiry, `MAX_WORKERS=2`, 205 s, stack rebuilt from this branch and cold-started from `down -v`, load 37→25. With `MAX_WORKERS=4` at load 27→42: 346/362, 16 timeouts. Every failure in every run was a 30 s test timeout during logins; no wrong answer. Runs before the fixes at the same load looked the same (330/362 at load 25–43, 31 timeouts + 1 grant-expiry test whose 2 s grant expired before the first request). `go test ./internal/adapters/logto` passes (new: `TestKeySetDropsDeletedKey`, `TestAPIRetriesWithFreshTokenOn401`).
 
 ## Findings, by severity
 
@@ -61,7 +61,7 @@ Alternatives, none clearly better:
 - **Cold start** from `down -v` (images built): **34 s** to app healthy at load ~14 (builder 31 s). Seed path ran on the fresh DB.
 - **60 parallel create + login:** 60/60 in 25 s, 57/60 in 27.5 s (the 3 = finding 3), 60/60 in 28 s; load 16–33. Builder: 12–27 s. The app-level 60-request permissions burst was not re-run (no app or kernel code changed).
 - **Replicas:** consistent for everything probed. Interactions and sessions are in Postgres (the suite's logins hop replicas through nginx round-robin), a key rotation is visible on all 3 at once, and the sign-in experience is read from Postgres per request (no Redis). No sticky sessions needed.
-- **Worker count:** at load 25–43 even `MAX_WORKERS=4` times out 16–31 tests; `MAX_WORKERS=2` passed 362/362 at load ~24–31. On this shared VM the suite result for f is a function of the load, so I'd quote f's pass count with its load.
+- **Worker count:** at load 25–43 even `MAX_WORKERS=4` times out 16–31 tests; `MAX_WORKERS=2` passed 362/362 at load 37→25. On this shared VM the suite result for f is a function of the load, so I'd quote f's pass count with its load.
 - Logto runs as root in its container (`svhd/logto` default). Minor; set `user:` if it ever leaves the spike.
 
 ## Licence and project health (checked against primary sources)
