@@ -129,6 +129,7 @@ func (k *keyRing) live(ctx context.Context, force bool) ([]sigKey, error) {
 	if err != nil {
 		return nil, err
 	}
+	defer rows.Close()
 	var keys []sigKey
 	for rows.Next() {
 		var sk sigKey

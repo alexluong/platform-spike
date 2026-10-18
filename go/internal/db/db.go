@@ -53,7 +53,9 @@ type txKey struct{}
 
 // WithTx puts the request's transaction in ctx (the executor does this), so an adapter
 // behind a port that only takes ctx can write in the same transaction (stack h's issuer).
-func WithTx(ctx context.Context, tx pgx.Tx) context.Context { return context.WithValue(ctx, txKey{}, tx) }
+func WithTx(ctx context.Context, tx pgx.Tx) context.Context {
+	return context.WithValue(ctx, txKey{}, tx)
+}
 
 // TxOr returns the request's transaction if ctx carries one, else q.
 func TxOr(ctx context.Context, q Querier) Querier {
