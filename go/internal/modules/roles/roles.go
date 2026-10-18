@@ -293,16 +293,16 @@ func (m *Module) assign(ctx context.Context, r *core.Req) (any, error) {
 	if in.UserID == "" || in.RoleID == "" {
 		return nil, core.BadInput("userId and roleId are required")
 	}
-	var member *string
+	var member bool
 	// FOR SHARE: a concurrent member removal (FOR UPDATE on the user) can't slip between
 	// this check and the insert and leave an assignment on a non-member.
-	err := r.Tx.QueryRow(ctx, `SELECT merchant_id FROM users WHERE id=$1 FOR SHARE`, in.UserID).Scan(&member)
+	err := r.Tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM memberships WHERE user_id=users.id AND merchant_id=$2) FROM users WHERE id=$1 FOR SHARE`, in.UserID, mid).Scan(&member)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, core.ErrNotFound
 	} else if err != nil {
 		return nil, err
 	}
-	if member == nil || *member != mid {
+	if !member {
 		return nil, core.E(http.StatusBadRequest, "not_member", "user is not a member of this merchant")
 	}
 	role, err := Load(ctx, r.Tx, mid, in.RoleID)

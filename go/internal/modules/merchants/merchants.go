@@ -12,7 +12,15 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-type Module struct{}
+type Module struct {
+	// MultiMerchant: a platform account may be a member of several merchants (SPEC §16.2,
+	// round-4 stacks). Off: one merchant per user (409 already_member).
+	MultiMerchant bool
+}
+
+// StatusSQL: the status a client sees. A merchant whose tenant pool is still being
+// provisioned (SPEC §16.3) shows "provisioning" until it is ready, unless suspended.
+const StatusSQL = `CASE WHEN status='active' AND NOT pool_ready THEN 'provisioning' ELSE status END`
 
 func merchantTarget(ctx context.Context, r *core.Req) (core.Target, error) {
 	return scope.Merchant(ctx, r.Tx, r.Path("mid"))
@@ -28,7 +36,7 @@ func (m *Module) Ops() []core.Op {
 
 func (m *Module) get(ctx context.Context, r *core.Req) (any, error) {
 	var id, name, status string
-	if err := r.Tx.QueryRow(ctx, `SELECT id, name, status FROM merchants WHERE id=$1`, r.Path("mid")).Scan(&id, &name, &status); err != nil {
+	if err := r.Tx.QueryRow(ctx, `SELECT id, name, `+StatusSQL+` FROM merchants WHERE id=$1`, r.Path("mid")).Scan(&id, &name, &status); err != nil {
 		return nil, err
 	}
 	return map[string]any{"id": id, "name": name, "status": status}, nil
@@ -45,19 +53,29 @@ func (m *Module) addMember(ctx context.Context, r *core.Req) (any, error) {
 		return nil, core.BadInput("userId is required")
 	}
 	mid := r.Path("mid")
-	var kind, subject string
-	var current *string
-	err := r.Tx.QueryRow(ctx, `SELECT kind, merchant_id, idp_subject FROM users WHERE id=$1 FOR UPDATE`, in.UserID).Scan(&kind, &current, &subject)
+	var kind string
+	var subject, home *string
+	var memberships int
+	var here bool
+	err := r.Tx.QueryRow(ctx, `SELECT kind, idp_subject, home_merchant_id,
+		  (SELECT count(*) FROM memberships WHERE user_id=users.id),
+		  EXISTS(SELECT 1 FROM memberships WHERE user_id=users.id AND merchant_id=$2)
+		FROM users WHERE id=$1 FOR UPDATE`, in.UserID, mid).Scan(&kind, &subject, &home, &memberships, &here)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, core.ErrNotFound
 	} else if err != nil {
 		return nil, err
 	}
+	// Another merchant's tenant staff (SPEC §16.2): they exist only in that merchant's pool.
+	// Hidden like any cross-tenant resource.
+	if home != nil && *home != mid {
+		return nil, core.ErrNotFound
+	}
 	if kind != string(perm.KindUser) {
 		return nil, core.BadInput("only merchant users can be members")
 	}
-	if current != nil {
-		return nil, core.Conflict("already_member") // one merchant per user in this spike
+	if here || (memberships > 0 && !m.MultiMerchant) {
+		return nil, core.Conflict("already_member") // one merchant per user unless MultiMerchant
 	}
 	// The executor's suspension check reads the merchant without a lock. Lock it here (as
 	// invitation accept does) so a concurrent suspend either waits for this join, and its
@@ -71,10 +89,10 @@ func (m *Module) addMember(ctx context.Context, r *core.Req) (any, error) {
 	if mstatus == "suspended" {
 		return nil, core.ErrMerchantSuspended
 	}
-	if _, err := r.Tx.Exec(ctx, `UPDATE users SET merchant_id=$2 WHERE id=$1`, in.UserID, mid); err != nil {
+	if _, err := r.Tx.Exec(ctx, `INSERT INTO memberships(user_id, merchant_id) VALUES ($1,$2)`, in.UserID, mid); err != nil {
 		return nil, err
 	}
-	if err := r.Emit(ctx, authz.Event{Type: authz.EvMemberAdded, MerchantID: mid, UserID: in.UserID, Subject: subject}); err != nil {
+	if err := r.Emit(ctx, authz.Event{Type: authz.EvMemberAdded, MerchantID: mid, UserID: in.UserID, Subject: deref(subject)}); err != nil {
 		return nil, err
 	}
 	return map[string]any{"userId": in.UserID, "merchantId": mid}, nil
@@ -82,13 +100,14 @@ func (m *Module) addMember(ctx context.Context, r *core.Req) (any, error) {
 
 func (m *Module) removeMember(ctx context.Context, r *core.Req) (any, error) {
 	mid, uid := r.Path("mid"), r.Path("uid")
-	var current *string
-	var subject string
-	err := r.Tx.QueryRow(ctx, `SELECT merchant_id, idp_subject FROM users WHERE id=$1 FOR UPDATE`, uid).Scan(&current, &subject)
+	var subject *string
+	var member bool
+	err := r.Tx.QueryRow(ctx, `SELECT idp_subject, EXISTS(SELECT 1 FROM memberships WHERE user_id=users.id AND merchant_id=$2)
+		FROM users WHERE id=$1 FOR UPDATE`, uid, mid).Scan(&subject, &member)
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		return nil, err
 	}
-	if err != nil || current == nil || *current != mid {
+	if err != nil || !member {
 		return nil, core.ErrNotFound
 	}
 	// Lock the merchant's owner assignments, then apply the owner rules.
@@ -137,8 +156,15 @@ func (m *Module) removeMember(ctx context.Context, r *core.Req) (any, error) {
 			return nil, err
 		}
 	}
-	if _, err := r.Tx.Exec(ctx, `UPDATE users SET merchant_id=NULL WHERE id=$1`, uid); err != nil {
+	if _, err := r.Tx.Exec(ctx, `DELETE FROM memberships WHERE user_id=$1 AND merchant_id=$2`, uid, mid); err != nil {
 		return nil, err
 	}
-	return nil, r.Emit(ctx, authz.Event{Type: authz.EvMemberRemoved, MerchantID: mid, UserID: uid, Subject: subject})
+	return nil, r.Emit(ctx, authz.Event{Type: authz.EvMemberRemoved, MerchantID: mid, UserID: uid, Subject: deref(subject)})
+}
+
+func deref(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
 }

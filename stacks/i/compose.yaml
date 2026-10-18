@@ -1,0 +1,148 @@
+# Stack i: Go app + Zitadel with one instance per merchant on one deployment + SpiceDB. SPEC §16.
+#   DOCKER_HOST=ssh://cs-ws docker compose -p ps-i --profile i up -d --build
+# Published: app 8096 only. The app is also the identity gateway: requests for
+# <pool>.<STACK_I_ID_DOMAIN>:8096 (workforce, platform, m-<merchant>) are proxied to Zitadel
+# with x-zitadel-instance-host / x-zitadel-public-host set from the app's directory; Zitadel
+# itself is not published. Issuers are http://<pool>.<STACK_I_ID_DOMAIN>:8096, so clients must
+# resolve *.<STACK_I_ID_DOMAIN> to the docker host (default cs.internal: gw DNS → cs-ws).
+# Zitadel reaches the platform issuer (Shop upstream) through the app container's alias.
+# Dev-only secrets below are generated placeholders for a local stack; the system API keys are
+# generated at first start into a volume (i-keys).
+
+x-i-pg: &ipgpass postgres-i-dev-pw
+
+services:
+  i-postgres:
+    profiles: [i]
+    build: ./postgres
+    command: ["postgres", "-c", "track_commit_timestamp=on", "-c", "max_connections=300"]
+    environment:
+      POSTGRES_PASSWORD: *ipgpass
+    volumes: [i-pg:/var/lib/postgresql/data]
+    networks: [i-net]
+    mem_limit: 1g
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d app"]
+      interval: 3s
+      timeout: 5s
+      retries: 30
+
+  # System API keys (JWT profile): provisioner (SYSTEM_OWNER + IAM_OWNER on every instance)
+  # and login (IAM_LOGIN_CLIENT on every instance, the login UI stand-in). Idempotent.
+  i-keygen:
+    profiles: [i]
+    build: ../../go
+    image: platform-spike-go:i
+    command: ["bootstrap", "keygen", "/keys"]
+    volumes: [i-keys:/keys]
+    networks: [i-net]
+
+  i-zitadel:
+    profiles: [i]
+    image: ghcr.io/zitadel/zitadel:v4.19.4
+    user: "0"
+    command: start-from-init --masterkey "MasterkeyNeedsToHave32Characters" --tlsMode disabled
+    environment:
+      ZITADEL_PORT: "8080"
+      # The first instance is the workforce instance; its domain is internal only (never DNS).
+      ZITADEL_EXTERNALDOMAIN: workforce.zitadel.internal
+      ZITADEL_EXTERNALPORT: "8080"
+      ZITADEL_EXTERNALSECURE: "false"
+      ZITADEL_TLS_ENABLED: "false"
+      ZITADEL_DATABASE_POSTGRES_DSN: postgresql://postgres:postgres-i-dev-pw@i-postgres:5432/zitadel?sslmode=disable
+      ZITADEL_DATABASE_POSTGRES_MAXOPENCONNS: "40"
+      ZITADEL_FIRSTINSTANCE_ORG_NAME: staff
+      ZITADEL_FIRSTINSTANCE_ORG_HUMAN_PASSWORDCHANGEREQUIRED: "false"
+      ZITADEL_SYSTEMDEFAULTS_PASSWORDHASHER_HASHER_COST: "6"
+      ZITADEL_SYSTEMAPIUSERS: >-
+        {"provisioner":{"Path":"/keys/provisioner.pub","Memberships":[{"MemberType":"System","Roles":["SYSTEM_OWNER","IAM_OWNER"]}]},
+         "login":{"Path":"/keys/login.pub","Memberships":[{"MemberType":"System","Roles":["IAM_LOGIN_CLIENT"]}]}}
+      ZITADEL_DEFAULTINSTANCE_FEATURES_LOGINV2_REQUIRED: "true"
+      # Relative: the login UI lives on whatever host the issuer is served on (the gateway).
+      ZITADEL_OIDC_DEFAULTLOGINURLV2: /ui/v2/login/login?authRequest=
+    volumes: [i-keys:/keys:ro]
+    networks: [i-net]
+    mem_limit: 2g
+    depends_on:
+      i-postgres: {condition: service_healthy}
+      i-keygen: {condition: service_completed_successfully}
+    healthcheck:
+      test: ["CMD", "/app/zitadel", "ready"]
+      interval: 5s
+      timeout: 10s
+      retries: 60
+      start_period: 20s
+
+  i-spicedb-migrate:
+    profiles: [i]
+    image: authzed/spicedb:v1.56.2
+    command: ["datastore", "migrate", "head", "--datastore-engine=postgres",
+              "--datastore-conn-uri=postgres://postgres:postgres-i-dev-pw@i-postgres:5432/spicedb?sslmode=disable"]
+    networks: [i-net]
+    depends_on:
+      i-postgres: {condition: service_healthy}
+
+  i-spicedb:
+    profiles: [i]
+    image: authzed/spicedb:v1.56.2
+    command: ["serve", "--grpc-preshared-key=spicedb-i-dev-key", "--datastore-engine=postgres",
+              "--datastore-conn-uri=postgres://postgres:postgres-i-dev-pw@i-postgres:5432/spicedb?sslmode=disable",
+              "--datastore-revision-quantization-interval=100ms", "--http-enabled=false"]
+    networks: [i-net]
+    mem_limit: 512m
+    depends_on:
+      i-spicedb-migrate: {condition: service_completed_successfully}
+
+  i-bootstrap:
+    profiles: [i]
+    image: platform-spike-go:i
+    command: ["bootstrap"]
+    environment: &ienv
+      DATABASE_URL: postgres://postgres:postgres-i-dev-pw@i-postgres:5432/app?sslmode=disable
+      IDP: zitadel-instances
+      AUTHZ: spicedb
+      PORT: "8096"
+      SPICEDB_ENDPOINT: i-spicedb:50051
+      SPICEDB_KEY: spicedb-i-dev-key
+      ZITADEL_URL: http://i-zitadel:8080
+      ZITADEL_EXTERNAL_DOMAIN: workforce.zitadel.internal
+      ZITADEL_EXTERNAL_ORIGIN: http://workforce.zitadel.internal:8080
+      ZITADEL_KEYS_DIR: /keys
+      ID_DOMAIN: ${STACK_I_ID_DOMAIN:-cs.internal}
+      ID_PORT: "8096"
+      TEST_MODE: "1"
+      TEST_SECRET: ${TEST_SECRET:-test-secret}
+    volumes: [i-keys:/keys:ro]
+    networks: [i-net]
+    depends_on:
+      i-postgres: {condition: service_healthy}
+      i-zitadel: {condition: service_healthy}
+      i-spicedb: {condition: service_started}
+
+  i-app:
+    profiles: [i]
+    image: platform-spike-go:i
+    command: ["server"]
+    environment: *ienv
+    ports: ["8096:8096"]
+    volumes: [i-keys:/keys:ro]
+    networks:
+      i-net:
+        # Zitadel fetches the Shop upstream's discovery/token endpoints server-side.
+        aliases: ["platform.${STACK_I_ID_DOMAIN:-cs.internal}"]
+    mem_limit: 384m
+    restart: unless-stopped
+    depends_on:
+      i-bootstrap: {condition: service_completed_successfully}
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8096/healthz"]
+      interval: 3s
+      timeout: 5s
+      retries: 40
+
+networks:
+  i-net: {}
+
+volumes:
+  i-pg: {}
+  i-keys: {}

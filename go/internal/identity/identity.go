@@ -50,3 +50,11 @@ type Provisioner interface {
 	// An adapter that shares the app's DB does it in the caller's transaction (ctx).
 	DeleteClient(ctx context.Context, clientID string) error
 }
+
+// Pools is implemented by IdPs that keep one user pool per merchant (SPEC §16: its own staff
+// and customers). Optional: stacks with one pool for everyone don't have it.
+type Pools interface {
+	// CreatePoolUser creates a password identity in merchantID's pool (test mode only).
+	// kind is "user" (the merchant's staff) or "customer" (its customers).
+	CreatePoolUser(ctx context.Context, merchantID, email, password, kind string) (subject string, err error)
+}

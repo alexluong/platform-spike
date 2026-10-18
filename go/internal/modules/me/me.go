@@ -23,6 +23,12 @@ func (m *Module) me(ctx context.Context, r *core.Req) (any, error) {
 	if r.P.MerchantID != "" {
 		out["merchantId"] = r.P.MerchantID
 	}
+	switch r.P.Kind {
+	case perm.KindUser:
+		out["merchantIds"] = core.NonNil(r.P.MerchantIDs) // SPEC §16.2
+	case perm.KindCustomer:
+		out["shopLinked"] = r.P.ShopAccountID != "" // SPEC §16.5
+	}
 	return out, nil
 }
 

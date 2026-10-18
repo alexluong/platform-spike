@@ -12,12 +12,17 @@ import (
 	"github.com/alexluong/platform-spike/go/internal/authz"
 	"github.com/alexluong/platform-spike/go/internal/core"
 	"github.com/alexluong/platform-spike/go/internal/db"
+	"github.com/alexluong/platform-spike/go/internal/modules/customers"
 	"github.com/alexluong/platform-spike/go/internal/modules/scope"
 	"github.com/alexluong/platform-spike/go/internal/perm"
 	"github.com/jackc/pgx/v5"
 )
 
-type Module struct{}
+type Module struct {
+	// ShopLinks (SPEC §16.5): a platform-level customer (Shop buyer) orders at a merchant as
+	// that merchant's customer record linked to the Shop account; its history spans them.
+	ShopLinks bool
+}
 
 var errInvalidTransition = core.Conflict("invalid_transition")
 
@@ -77,6 +82,20 @@ func (m *Module) place(ctx context.Context, r *core.Req) (any, error) {
 	if status == "suspended" {
 		return nil, core.ErrMerchantSuspended
 	}
+	customerID := r.P.ID
+	switch {
+	case r.P.HomeMerchantID != "":
+		// A customer of a merchant's own pool belongs to that merchant (all its stores, SPEC §16.1).
+		if r.P.HomeMerchantID != r.Target.MerchantID {
+			return nil, core.ErrForbidden
+		}
+	case m.ShopLinks:
+		id, err := customers.Linked(ctx, r.Tx, r.Target.MerchantID, r.P.ID)
+		if err != nil {
+			return nil, err
+		}
+		customerID = id
+	}
 	var in struct {
 		Items []struct {
 			ProductID string `json:"productId"`
@@ -89,7 +108,7 @@ func (m *Module) place(ctx context.Context, r *core.Req) (any, error) {
 	if len(in.Items) == 0 {
 		return nil, core.BadInput("items are required")
 	}
-	o := scope.Order{ID: db.NewID("o"), StoreID: r.Target.Resource.ID, CustomerID: r.P.ID, Status: "pending", Items: []scope.Item{}}
+	o := scope.Order{ID: db.NewID("o"), StoreID: r.Target.Resource.ID, CustomerID: customerID, Status: "pending", Items: []scope.Item{}}
 	for _, it := range in.Items {
 		if it.Qty <= 0 || it.Qty > maxQty {
 			return nil, core.BadInput("qty must be 1..1000000")
@@ -138,7 +157,15 @@ func (m *Module) listStore(ctx context.Context, r *core.Req) (any, error) {
 func (m *Module) get(ctx context.Context, r *core.Req) (any, error) {
 	o := scope.OrderOf(r)
 	if r.P.Kind == perm.KindCustomer && o.CustomerID != r.P.ID {
-		return nil, core.ErrNotFound // order.view_own
+		var mine bool
+		if m.ShopLinks && r.P.HomeMerchantID == "" { // a Shop buyer owns its linked records' orders
+			if err := r.Tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM users WHERE id=$1 AND shop_account_id=$2)`, o.CustomerID, r.P.ID).Scan(&mine); err != nil {
+				return nil, err
+			}
+		}
+		if !mine {
+			return nil, core.ErrNotFound // order.view_own
+		}
 	}
 	return o, nil
 }
@@ -146,6 +173,11 @@ func (m *Module) get(ctx context.Context, r *core.Req) (any, error) {
 func (m *Module) mine(ctx context.Context, r *core.Req) (any, error) {
 	if r.P.Kind != perm.KindCustomer {
 		return nil, core.ErrForbidden
+	}
+	if m.ShopLinks && r.P.HomeMerchantID == "" {
+		// Shop history: every merchant's record linked to this Shop account (SPEC §16.5).
+		return collect(r.Tx.Query(ctx, `SELECT `+scope.OrderCols+` FROM orders WHERE customer_id=$1
+			OR customer_id IN (SELECT id FROM users WHERE shop_account_id=$1) ORDER BY created_at`, r.P.ID))
 	}
 	return collect(r.Tx.Query(ctx, `SELECT `+scope.OrderCols+` FROM orders WHERE customer_id=$1 ORDER BY created_at`, r.P.ID))
 }

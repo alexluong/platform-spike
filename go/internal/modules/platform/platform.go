@@ -12,13 +12,36 @@ import (
 	"github.com/alexluong/platform-spike/go/internal/core"
 	"github.com/alexluong/platform-spike/go/internal/db"
 	"github.com/alexluong/platform-spike/go/internal/identity"
+	"github.com/alexluong/platform-spike/go/internal/modules/merchants"
 	"github.com/alexluong/platform-spike/go/internal/modules/scope"
 	"github.com/alexluong/platform-spike/go/internal/perm"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 )
+
+func deref(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
+}
 
 type Module struct {
 	IdP identity.Provisioner
+	// MultiMerchant: the owner may already be a member elsewhere (SPEC §16.2).
+	MultiMerchant bool
+	// TenantPools: the identity side provisions a pool per merchant after create (SPEC §16.3,
+	// from the merchant.created outbox event); the merchant shows "provisioning" until
+	// MarkPoolReady. Which IdP and how is not this module's business.
+	TenantPools bool
+}
+
+// MarkPoolReady: the merchant's tenant pool is ready (called by the identity side).
+func MarkPoolReady(ctx context.Context, q interface {
+	Exec(context.Context, string, ...any) (pgconn.CommandTag, error)
+}, merchantID string) error {
+	_, err := q.Exec(ctx, `UPDATE merchants SET pool_ready=true WHERE id=$1`, merchantID)
+	return err
 }
 
 type Merchant struct {
@@ -53,26 +76,31 @@ func (m *Module) createMerchant(ctx context.Context, r *core.Req) (any, error) {
 	if in.Name == "" || in.OwnerUserID == "" {
 		return nil, core.BadInput("name and ownerUserId are required")
 	}
-	var kind, subject string
-	var current *string
-	err := r.Tx.QueryRow(ctx, `SELECT kind, merchant_id, idp_subject FROM users WHERE id=$1 FOR UPDATE`, in.OwnerUserID).Scan(&kind, &current, &subject)
+	var kind string
+	var subject, home *string
+	var memberships int
+	err := r.Tx.QueryRow(ctx, `SELECT kind, idp_subject, home_merchant_id, (SELECT count(*) FROM memberships WHERE user_id=users.id)
+		FROM users WHERE id=$1 FOR UPDATE`, in.OwnerUserID).Scan(&kind, &subject, &home, &memberships)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, core.E(http.StatusBadRequest, "invalid_input", "owner user not found")
 	} else if err != nil {
 		return nil, err
 	}
-	if kind != string(perm.KindUser) {
-		return nil, core.BadInput("owner must be a merchant user")
+	if kind != string(perm.KindUser) || home != nil {
+		return nil, core.BadInput("owner must be a platform account") // not another merchant's tenant staff (SPEC §16.1)
 	}
-	if current != nil {
+	if memberships > 0 && !m.MultiMerchant {
 		return nil, core.Conflict("already_member")
 	}
 	mer := Merchant{ID: db.NewID("m"), Name: in.Name, Status: "active"}
+	if m.TenantPools {
+		mer.Status = "provisioning"
+	}
 	aid := db.NewID("ra")
-	if _, err := r.Tx.Exec(ctx, `INSERT INTO merchants(id, name, status) VALUES ($1,$2,'active')`, mer.ID, mer.Name); err != nil {
+	if _, err := r.Tx.Exec(ctx, `INSERT INTO merchants(id, name, status, pool_ready) VALUES ($1,$2,'active',$3)`, mer.ID, mer.Name, !m.TenantPools); err != nil {
 		return nil, err
 	}
-	if _, err := r.Tx.Exec(ctx, `UPDATE users SET merchant_id=$2 WHERE id=$1`, in.OwnerUserID, mer.ID); err != nil {
+	if _, err := r.Tx.Exec(ctx, `INSERT INTO memberships(user_id, merchant_id) VALUES ($1,$2)`, in.OwnerUserID, mer.ID); err != nil {
 		return nil, err
 	}
 	if _, err := r.Tx.Exec(ctx, `INSERT INTO role_assignments(id, merchant_id, user_id, role_id, scope_type, scope_id) VALUES ($1,$2,$3,'owner','merchant',$2)`,
@@ -86,14 +114,14 @@ func (m *Module) createMerchant(ctx context.Context, r *core.Req) (any, error) {
 		RoleID: perm.RoleOwner, ScopeType: "merchant", ScopeID: mer.ID}); err != nil {
 		return nil, err
 	}
-	if err := r.Emit(ctx, authz.Event{Type: authz.EvMemberAdded, MerchantID: mer.ID, UserID: in.OwnerUserID, Subject: subject}); err != nil {
+	if err := r.Emit(ctx, authz.Event{Type: authz.EvMemberAdded, MerchantID: mer.ID, UserID: in.OwnerUserID, Subject: deref(subject)}); err != nil {
 		return nil, err
 	}
 	return mer, nil
 }
 
 func (m *Module) listMerchants(ctx context.Context, r *core.Req) (any, error) {
-	rows, err := r.Tx.Query(ctx, `SELECT id, name, status FROM merchants ORDER BY created_at DESC`)
+	rows, err := r.Tx.Query(ctx, `SELECT id, name, `+merchants.StatusSQL+` FROM merchants ORDER BY created_at DESC`)
 	if err != nil {
 		return nil, err
 	}

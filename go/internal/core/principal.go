@@ -15,9 +15,31 @@ import (
 type Principal struct {
 	ID           string
 	Kind         perm.Kind
-	MerchantID   string // users (when a member) and agents
-	PlatformRole string // platform_admin | support
-	OwnerUserID  string // agents: the user who registered it
+	MerchantID   string   // agents; users with exactly one membership
+	MerchantIDs  []string // users: every merchant they are a member of (SPEC §16.2: partners have several)
+	PlatformRole string   // platform_admin | support
+	OwnerUserID  string   // agents: the user who registered it
+	// HomeMerchantID: the merchant whose tenant pool holds this identity (SPEC §16.1: its own
+	// staff and customers). Empty for platform-level identities.
+	HomeMerchantID string
+	// ShopAccountID: a merchant's customer record linked to a Shop account (SPEC §16.5).
+	ShopAccountID string
+}
+
+// MemberOf: users are checked against their memberships, agents against their merchant.
+func (p *Principal) MemberOf(merchantID string) bool {
+	if p.MerchantID == merchantID {
+		return merchantID != ""
+	}
+	if p.Kind == perm.KindAgent {
+		return false
+	}
+	for _, m := range p.MerchantIDs {
+		if m == merchantID {
+			return true
+		}
+	}
+	return false
 }
 
 // Authenticator turns a bearer token into a Principal: identity port + app DB.
@@ -43,7 +65,7 @@ func (a *Authenticator) Authenticate(ctx context.Context, header string) (*Princ
 	// source: membership comes from the app's records. A token minted for another merchant
 	// than the one the caller belongs to now is stale: log in again. No claim, no check
 	// (tokens from before the user joined, IdPs without tenancy).
-	if t.MerchantID != "" && p.MerchantID != "" && t.MerchantID != p.MerchantID {
+	if t.MerchantID != "" && (p.MerchantID != "" || len(p.MerchantIDs) > 0) && !p.MemberOf(t.MerchantID) {
 		return nil, ErrUnauthenticated
 	}
 	return p, nil
@@ -53,13 +75,19 @@ func (a *Authenticator) Authenticate(ctx context.Context, header string) (*Princ
 func LookupPrincipal(ctx context.Context, db *pgxpool.Pool, sub string) (*Principal, error) {
 	var p Principal
 	var kind string
-	var merchant, role *string
-	err := db.QueryRow(ctx, `SELECT id, kind, merchant_id, platform_role FROM users WHERE idp_subject=$1`, sub).
-		Scan(&p.ID, &kind, &merchant, &role)
+	var role, home, shop *string
+	err := db.QueryRow(ctx, `SELECT id, kind, platform_role, home_merchant_id, shop_account_id,
+		  coalesce((SELECT array_agg(merchant_id ORDER BY merchant_id) FROM memberships WHERE user_id=users.id), '{}')
+		FROM users WHERE idp_subject=$1`, sub).
+		Scan(&p.ID, &kind, &role, &home, &shop, &p.MerchantIDs)
 	if err == nil {
 		p.Kind = perm.Kind(kind)
-		p.MerchantID = deref(merchant)
 		p.PlatformRole = deref(role)
+		p.HomeMerchantID = deref(home)
+		p.ShopAccountID = deref(shop)
+		if len(p.MerchantIDs) == 1 {
+			p.MerchantID = p.MerchantIDs[0]
+		}
 		return &p, nil
 	}
 	if !errors.Is(err, pgx.ErrNoRows) {

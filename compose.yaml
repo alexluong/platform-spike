@@ -10,3 +10,4 @@ include:
   - stacks/f/compose.yaml
   - stacks/g/compose.yaml
   - stacks/h/compose.yaml
+  - stacks/i/compose.yaml

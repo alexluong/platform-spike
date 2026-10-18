@@ -79,6 +79,12 @@ func run(log *slog.Logger) error {
 	if len(os.Args) > 1 && os.Args[1] == "rotate-signing-key" {
 		return rotateSigningKey(ctx, log)
 	}
+	if len(os.Args) > 2 && os.Args[1] == "keygen" { // stack i: Zitadel system API user keys
+		return zitadel.Keygen(os.Args[2], "provisioner", "login")
+	}
+	if len(os.Args) > 1 && os.Args[1] == "probe" {
+		return probe(ctx, log)
+	}
 
 	pool, err := db.Open(ctx, env("DATABASE_URL", "postgres://app:app@localhost:5432/app"))
 	if err != nil {

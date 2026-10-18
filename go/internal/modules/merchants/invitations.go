@@ -93,18 +93,25 @@ func (m *Module) acceptInvitation(ctx context.Context, r *core.Req) (any, error)
 	} else if err != nil {
 		return nil, err
 	}
-	var myEmail, subject string
-	var current *string
-	if err := r.Tx.QueryRow(ctx, `SELECT email, merchant_id, idp_subject FROM users WHERE id=$1 FOR UPDATE`, r.P.ID).Scan(&myEmail, &current, &subject); err != nil {
+	var myEmail, subject, home *string
+	var memberships int
+	var here bool
+	if err := r.Tx.QueryRow(ctx, `SELECT email, idp_subject, home_merchant_id,
+		  (SELECT count(*) FROM memberships WHERE user_id=users.id),
+		  EXISTS(SELECT 1 FROM memberships WHERE user_id=users.id AND merchant_id=$2)
+		FROM users WHERE id=$1 FOR UPDATE`, r.P.ID, mid).Scan(&myEmail, &subject, &home, &memberships, &here); err != nil {
 		return nil, err
 	}
-	if !strings.EqualFold(myEmail, email) {
+	if myEmail == nil || (home != nil && *home != mid) {
+		return nil, core.ErrNotFound // another merchant's tenant staff can't join here (SPEC §16.2)
+	}
+	if !strings.EqualFold(*myEmail, email) {
 		return nil, core.ErrNotFound
 	}
 	if status != "pending" {
 		return nil, core.E(http.StatusConflict, "invitation_not_pending", status)
 	}
-	if current != nil {
+	if here || (memberships > 0 && !m.MultiMerchant) {
 		return nil, core.Conflict("already_member")
 	}
 	// FOR SHARE: a concurrent suspend waits for this join (and then disables the new member too).
@@ -115,13 +122,13 @@ func (m *Module) acceptInvitation(ctx context.Context, r *core.Req) (any, error)
 	if mstatus == "suspended" {
 		return nil, core.ErrMerchantSuspended
 	}
-	if _, err := r.Tx.Exec(ctx, `UPDATE users SET merchant_id=$2 WHERE id=$1`, r.P.ID, mid); err != nil {
+	if _, err := r.Tx.Exec(ctx, `INSERT INTO memberships(user_id, merchant_id) VALUES ($1,$2)`, r.P.ID, mid); err != nil {
 		return nil, err
 	}
 	if _, err := r.Tx.Exec(ctx, `UPDATE invitations SET status='accepted', accepted_by=$2 WHERE id=$1`, r.Path("iid"), r.P.ID); err != nil {
 		return nil, err
 	}
-	if err := r.Emit(ctx, authz.Event{Type: authz.EvMemberAdded, MerchantID: mid, UserID: r.P.ID, Subject: subject}); err != nil {
+	if err := r.Emit(ctx, authz.Event{Type: authz.EvMemberAdded, MerchantID: mid, UserID: r.P.ID, Subject: deref(subject)}); err != nil {
 		return nil, err
 	}
 	return map[string]any{"merchantId": mid}, nil
