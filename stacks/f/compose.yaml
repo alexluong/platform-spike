@@ -39,19 +39,11 @@ services:
       # No admin console: nothing listens on 3002.
       ADMIN_DISABLE_LOCALHOST: "1"
       TRUST_PROXY_HEADER: "1"
-      # Without Redis, Logto's "well-known" cache (sign-in experience, connectors, resources by
-      # indicator, signing-key state, ...) is a no-op: every request reads them from Postgres.
-      REDIS_URL: redis://f-redis:6379
+      # No REDIS_URL: Logto's well-known cache is then a no-op (config read from Postgres per
+      # request). Measured with Redis: ~5% less Logto CPU per login, not worth a container.
     networks: [f-net]
     depends_on:
       f-postgres: {condition: service_healthy}
-
-  f-redis:
-    profiles: [f]
-    image: redis:8.2-alpine
-    command: ["redis-server", "--save", "", "--appendonly", "no", "--maxmemory", "64mb", "--maxmemory-policy", "allkeys-lru"]
-    networks: [f-net]
-    mem_limit: 96m
 
   f-logto:
     profiles: [f]
@@ -66,7 +58,6 @@ services:
     mem_limit: 768m
     depends_on:
       f-logto-init: {condition: service_completed_successfully}
-      f-redis: {condition: service_started}
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://localhost:3001/api/status').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"]
       interval: 3s
