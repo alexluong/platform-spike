@@ -94,8 +94,7 @@ func (m *Module) acceptInvitation(ctx context.Context, r *core.Req) (any, error)
 		return nil, err
 	}
 	var myEmail, subject string
-	var current *string
-	if err := r.Tx.QueryRow(ctx, `SELECT email, merchant_id, idp_subject FROM users WHERE id=$1 FOR UPDATE`, r.P.ID).Scan(&myEmail, &current, &subject); err != nil {
+	if err := r.Tx.QueryRow(ctx, `SELECT coalesce(email,''), coalesce(idp_subject,'') FROM users WHERE id=$1 FOR UPDATE`, r.P.ID).Scan(&myEmail, &subject); err != nil {
 		return nil, err
 	}
 	if !strings.EqualFold(myEmail, email) {
@@ -104,8 +103,8 @@ func (m *Module) acceptInvitation(ctx context.Context, r *core.Req) (any, error)
 	if status != "pending" {
 		return nil, core.E(http.StatusConflict, "invitation_not_pending", status)
 	}
-	if current != nil {
-		return nil, core.Conflict("already_member")
+	if err := CanJoin(ctx, r.Tx, r.P.ID, mid, m.MultiMerchant); err != nil {
+		return nil, err
 	}
 	// FOR SHARE: a concurrent suspend waits for this join (and then disables the new member too).
 	var mstatus string
@@ -115,7 +114,7 @@ func (m *Module) acceptInvitation(ctx context.Context, r *core.Req) (any, error)
 	if mstatus == "suspended" {
 		return nil, core.ErrMerchantSuspended
 	}
-	if _, err := r.Tx.Exec(ctx, `UPDATE users SET merchant_id=$2 WHERE id=$1`, r.P.ID, mid); err != nil {
+	if _, err := r.Tx.Exec(ctx, `INSERT INTO memberships(user_id, merchant_id) VALUES ($1,$2)`, r.P.ID, mid); err != nil {
 		return nil, err
 	}
 	if _, err := r.Tx.Exec(ctx, `UPDATE invitations SET status='accepted', accepted_by=$2 WHERE id=$1`, r.Path("iid"), r.P.ID); err != nil {

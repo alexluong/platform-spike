@@ -20,8 +20,21 @@ func (m *Module) Ops() []core.Op {
 
 func (m *Module) me(ctx context.Context, r *core.Req) (any, error) {
 	out := map[string]any{"id": r.P.ID, "kind": r.P.Kind}
-	if r.P.MerchantID != "" {
-		out["merchantId"] = r.P.MerchantID
+	switch r.P.Kind {
+	case perm.KindUser:
+		// SPEC §16.2: every membership; merchantId when there is exactly one.
+		out["merchantIds"] = core.NonNil(r.P.MerchantIDs)
+		if r.P.MerchantID != "" {
+			out["merchantId"] = r.P.MerchantID
+		}
+	case perm.KindCustomer:
+		if r.P.HomeMerchantID != "" { // a merchant's own customer (SPEC §16.5)
+			out["shopLinked"] = r.P.ShopAccountID != ""
+		}
+	default:
+		if r.P.MerchantID != "" {
+			out["merchantId"] = r.P.MerchantID
+		}
 	}
 	return out, nil
 }

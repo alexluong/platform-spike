@@ -15,9 +15,27 @@ import (
 type Principal struct {
 	ID           string
 	Kind         perm.Kind
-	MerchantID   string // users (when a member) and agents
+	MerchantID   string // agents; users with exactly one membership
 	PlatformRole string // platform_admin | support
 	OwnerUserID  string // agents: the user who registered it
+	// MerchantIDs: a user's memberships (SPEC §16.2: a platform account may be a member of
+	// several merchants). Tenant staff have at most their own merchant.
+	MerchantIDs []string
+	// HomeMerchantID: the merchant whose own pool holds this principal (tenant staff and
+	// customers, SPEC §16.1). "" for platform-level principals.
+	HomeMerchantID string
+	// ShopAccountID: a merchant's customer record linked to this Shop account (SPEC §16.5).
+	ShopAccountID string
+}
+
+// IsMemberOf: a user's membership at merchant mid.
+func (p *Principal) IsMemberOf(mid string) bool {
+	for _, m := range p.MerchantIDs {
+		if m == mid {
+			return true
+		}
+	}
+	return false
 }
 
 // Authenticator turns a bearer token into a Principal: identity port + app DB.
@@ -39,11 +57,16 @@ func (a *Authenticator) Authenticate(ctx context.Context, header string) (*Princ
 	if err != nil {
 		return nil, err
 	}
+	// A principal of a merchant's own pool (SPEC §16.1) is accepted only with a token of
+	// that merchant's pool: the adapter puts the pool's merchant in t.MerchantID.
+	if p.HomeMerchantID != "" && t.MerchantID != p.HomeMerchantID {
+		return nil, ErrUnauthenticated
+	}
 	// A tenant claim in the token (IdPs with organizations) is an extra check, never the
-	// source: membership comes from the app's records. A token minted for another merchant
-	// than the one the caller belongs to now is stale: log in again. No claim, no check
-	// (tokens from before the user joined, IdPs without tenancy).
-	if t.MerchantID != "" && p.MerchantID != "" && t.MerchantID != p.MerchantID {
+	// source: membership comes from the app's records. A token minted for a merchant the
+	// caller doesn't belong to now is stale: log in again. No claim, no check (tokens from
+	// before the user joined, IdPs without tenancy).
+	if t.MerchantID != "" && p.HomeMerchantID == "" && len(p.MerchantIDs) > 0 && !p.IsMemberOf(t.MerchantID) {
 		return nil, ErrUnauthenticated
 	}
 	return p, nil
@@ -53,13 +76,19 @@ func (a *Authenticator) Authenticate(ctx context.Context, header string) (*Princ
 func LookupPrincipal(ctx context.Context, db *pgxpool.Pool, sub string) (*Principal, error) {
 	var p Principal
 	var kind string
-	var merchant, role *string
-	err := db.QueryRow(ctx, `SELECT id, kind, merchant_id, platform_role FROM users WHERE idp_subject=$1`, sub).
-		Scan(&p.ID, &kind, &merchant, &role)
+	var home, role, shop *string
+	err := db.QueryRow(ctx, `SELECT u.id, u.kind, u.home_merchant_id, u.platform_role, u.shop_account_id,
+			coalesce((SELECT array_agg(m.merchant_id ORDER BY m.merchant_id) FROM memberships m WHERE m.user_id = u.id), '{}')
+		FROM users u WHERE u.idp_subject=$1`, sub).
+		Scan(&p.ID, &kind, &home, &role, &shop, &p.MerchantIDs)
 	if err == nil {
 		p.Kind = perm.Kind(kind)
-		p.MerchantID = deref(merchant)
+		p.HomeMerchantID = deref(home)
 		p.PlatformRole = deref(role)
+		p.ShopAccountID = deref(shop)
+		if len(p.MerchantIDs) == 1 {
+			p.MerchantID = p.MerchantIDs[0]
+		}
 		return &p, nil
 	}
 	if !errors.Is(err, pgx.ErrNoRows) {

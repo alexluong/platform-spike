@@ -1,0 +1,103 @@
+# Stack h2: stack h (Go app with an in-process OpenID provider, zitadel/oidc pkg/op) with pools as
+# rows: workforce, platform, shop and one tenant pool per merchant, each its own issuer at
+# PUBLIC_URL/oidc/<pool> (SPEC §16). SpiceDB, one Postgres.
+#   DOCKER_HOST=ssh://cs-ws docker compose -p ps-h2 --profile h2 up -d --build
+# Published: app 8098 only. Dev-only secrets below are placeholders for a local stack.
+
+services:
+  h2-postgres:
+    profiles: [h2]
+    build: ./postgres
+    image: platform-spike-postgres:h2
+    command: ["postgres", "-c", "track_commit_timestamp=on", "-c", "max_connections=200"]
+    environment:
+      POSTGRES_PASSWORD: postgres-h2-dev-pw
+    volumes: [h2-pg:/var/lib/postgresql/data]
+    networks: [h2-net]
+    mem_limit: 768m
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d app"]
+      interval: 3s
+      timeout: 5s
+      retries: 30
+
+  h2-spicedb-migrate:
+    profiles: [h2]
+    image: authzed/spicedb:v1.56.2
+    command: ["datastore", "migrate", "head", "--datastore-engine=postgres",
+              "--datastore-conn-uri=postgres://postgres:postgres-h2-dev-pw@h2-postgres:5432/spicedb?sslmode=disable"]
+    networks: [h2-net]
+    depends_on:
+      h2-postgres: {condition: service_healthy}
+
+  h2-spicedb:
+    profiles: [h2]
+    image: authzed/spicedb:v1.56.2
+    command: ["serve", "--grpc-preshared-key=spicedb-h2-dev-key", "--datastore-engine=postgres",
+              "--datastore-conn-uri=postgres://postgres:postgres-h2-dev-pw@h2-postgres:5432/spicedb?sslmode=disable",
+              "--datastore-revision-quantization-interval=100ms", "--http-enabled=false"]
+    networks: [h2-net]
+    mem_limit: 512m
+    depends_on:
+      h2-spicedb-migrate: {condition: service_completed_successfully}
+
+  # Migrations (app + issuer tables + the three platform-level pools) and the SpiceDB schema.
+  h2-bootstrap:
+    profiles: [h2]
+    build: ../../go
+    image: platform-spike-go:h2
+    command: ["bootstrap"]
+    environment: &appenv
+      PORT: "8098"
+      DATABASE_URL: postgres://postgres:postgres-h2-dev-pw@h2-postgres:5432/app?sslmode=disable
+      IDP: oidcpool
+      AUTHZ: spicedb
+      MULTI_MERCHANT: "1"
+      SPICEDB_ENDPOINT: h2-spicedb:50051
+      SPICEDB_KEY: spicedb-h2-dev-key
+      # Issuers: PUBLIC_URL/oidc/<pool>. INTERNAL_URL: the app reaching itself for Sign in with
+      # Shop's back channel (discovery, token, JWKS of the shop pool).
+      PUBLIC_URL: http://${STACK_H2_HOST:-cs-ws.lab.alexluong.com}:8098
+      INTERNAL_URL: http://localhost:8098
+      ISSUER_SECRET: ${ISSUER_SECRET:-h2-dev-issuer-secret-0123456789abcdef}
+      API_AUDIENCE: platform-api
+      LOGIN_CLIENT_ID: platform-cli
+      STAFF_CLIENT_ID: merchant-admin
+      CUSTOMER_CLIENT_ID: storefront
+      # Loopback: any port matches (RFC 8252). 127.0.0.1, not localhost: cs-ws's dev proxy
+      # rewrites localhost in redirects on ports 8090+.
+      DRIVER_REDIRECT_URI: http://127.0.0.1/callback
+      ACCESS_TOKEN_TTL: 15m
+      REFRESH_TOKEN_TTL: 24h
+      # argon2id: 19 MiB per hash; keep the GC target under mem_limit (stack h's OOM).
+      GOMEMLIMIT: 200MiB
+      STACK_CONFIG: /tmp/stack.json
+      TEST_MODE: "1"
+      TEST_SECRET: ${TEST_SECRET:-test-secret}
+    networks: [h2-net]
+    depends_on:
+      h2-postgres: {condition: service_healthy}
+      h2-spicedb: {condition: service_started}
+
+  h2-app:
+    profiles: [h2]
+    image: platform-spike-go:h2
+    command: ["server"]
+    environment: *appenv
+    ports: ["8098:8098"]
+    networks: [h2-net]
+    mem_limit: 256m
+    restart: unless-stopped
+    depends_on:
+      h2-bootstrap: {condition: service_completed_successfully}
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8098/healthz"]
+      interval: 3s
+      timeout: 5s
+      retries: 40
+
+networks:
+  h2-net: {}
+
+volumes:
+  h2-pg: {}

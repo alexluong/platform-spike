@@ -94,10 +94,10 @@ services:
       timeout: 5s
       retries: 40
 
-  # A second instance on the same DB, not published (profile h2: `--profile h --profile h2`).
+  # A second instance on the same DB, not published (profile h-multi: `--profile h --profile h-multi`; was h2 before stack h2 took the name).
   # Used to check that keys, codes and tokens work across instances.
   h-app2:
-    profiles: [h2]
+    profiles: [h-multi]
     image: platform-spike-go:h
     command: ["server"]
     environment: *appenv

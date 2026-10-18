@@ -2,6 +2,7 @@
 // Stack a: IDP=zitadel AUTHZ=spicedb. Stack b: IDP=ory AUTHZ=openfga.
 // Stack f: IDP=logto AUTHZ=spicedb.
 // Stack h: IDP=oidcop AUTHZ=spicedb (the OpenID provider runs inside this server, on the app DB).
+// Stack h2: IDP=oidcpool AUTHZ=spicedb MULTI_MERCHANT=1 (h with pools as rows, one issuer per pool).
 // Stack a2: IDP=zitadel-orgs AUTHZ=spicedb (an organization per merchant; the IdP is a
 // second outbox consumer).
 package main
@@ -20,6 +21,7 @@ import (
 
 	"github.com/alexluong/platform-spike/go/internal/adapters/logto"
 	"github.com/alexluong/platform-spike/go/internal/adapters/oidcop"
+	"github.com/alexluong/platform-spike/go/internal/adapters/oidcpool"
 	"github.com/alexluong/platform-spike/go/internal/adapters/openfga"
 	"github.com/alexluong/platform-spike/go/internal/adapters/ory"
 	"github.com/alexluong/platform-spike/go/internal/adapters/spicedb"
@@ -31,6 +33,7 @@ import (
 	"github.com/alexluong/platform-spike/go/internal/modules/agents"
 	"github.com/alexluong/platform-spike/go/internal/modules/apps"
 	"github.com/alexluong/platform-spike/go/internal/modules/catalog"
+	"github.com/alexluong/platform-spike/go/internal/modules/customers"
 	"github.com/alexluong/platform-spike/go/internal/modules/delivery"
 	"github.com/alexluong/platform-spike/go/internal/modules/me"
 	"github.com/alexluong/platform-spike/go/internal/modules/merchants"
@@ -119,6 +122,15 @@ func run(log *slog.Logger) error {
 		if id, err = oidcop.New(ctx, pool, cfg, log); err != nil {
 			return err
 		}
+	case "oidcpool":
+		cfg, err := oidcpoolConfig()
+		if err != nil {
+			return err
+		}
+		cfg.OnShopLink = customers.ShopLinker(pool)
+		if id, err = oidcpool.New(ctx, pool, cfg, log); err != nil {
+			return err
+		}
 	default:
 		return fmt.Errorf("unknown IDP %q", os.Getenv("IDP"))
 	}
@@ -159,8 +171,10 @@ func run(log *slog.Logger) error {
 	}
 
 	var reg core.Registry
-	reg.Add(&platform.Module{IdP: id})
-	reg.Add(&merchants.Module{})
+	multi := os.Getenv("MULTI_MERCHANT") == "1"
+	pools, _ := id.(identity.TenantPools)
+	reg.Add(&platform.Module{IdP: id, MultiMerchant: multi})
+	reg.Add(&merchants.Module{MultiMerchant: multi, Pools: pools})
 	reg.Add(&roles.Module{})
 	reg.Add(&stores.Module{})
 	reg.Add(&catalog.Module{})
@@ -247,6 +261,28 @@ func oidcopConfig() (oidcop.Config, error) {
 		Audience: env("API_AUDIENCE", "platform-api"), LoginClientID: env("LOGIN_CLIENT_ID", "platform-cli"),
 		RedirectURIs: strings.Split(env("DRIVER_REDIRECT_URI", "http://127.0.0.1/callback"), ","),
 		AccessTTL:    access, RefreshTTL: refresh,
+	}, nil
+}
+
+// oidcpoolConfig: stack h2's issuers, from env. Each pool's issuer is PUBLIC_URL/oidc/<pool>,
+// never derived from Host / X-Forwarded-*.
+func oidcpoolConfig() (oidcpool.Config, error) {
+	public := strings.TrimSuffix(env("PUBLIC_URL", "http://cs-ws.lab.alexluong.com:8098"), "/")
+	access, err := time.ParseDuration(env("ACCESS_TOKEN_TTL", "15m"))
+	if err != nil {
+		return oidcpool.Config{}, err
+	}
+	refresh, err := time.ParseDuration(env("REFRESH_TOKEN_TTL", "24h"))
+	if err != nil {
+		return oidcpool.Config{}, err
+	}
+	return oidcpool.Config{
+		PublicURL: public, InternalURL: env("INTERNAL_URL", "http://localhost:"+env("PORT", "8098")),
+		Secret: os.Getenv("ISSUER_SECRET"), Audience: env("API_AUDIENCE", "platform-api"),
+		LoginClientID: env("LOGIN_CLIENT_ID", "platform-cli"), StaffClientID: env("STAFF_CLIENT_ID", "merchant-admin"),
+		ShopperClient: env("CUSTOMER_CLIENT_ID", "storefront"),
+		RedirectURIs:  strings.Split(env("DRIVER_REDIRECT_URI", "http://127.0.0.1/callback"), ","),
+		AccessTTL:     access, RefreshTTL: refresh,
 	}, nil
 }
 
