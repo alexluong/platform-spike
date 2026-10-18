@@ -13,12 +13,12 @@ import { issuer } from '@openauthjs/openauth/issuer'
 import { PasswordProvider, ScryptHasher } from '@openauthjs/openauth/provider/password'
 import type { Provider } from '@openauthjs/openauth/provider/provider'
 import { encryptionKeys, signingKeys } from '@openauthjs/openauth/keys'
-import { Storage } from '@openauthjs/openauth/storage/storage'
+import { joinKey, Storage } from '@openauthjs/openauth/storage/storage'
 import { createSubjects } from '@openauthjs/openauth/subject'
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto'
 import type pg from 'pg'
 import { z } from 'zod'
-import { migrateKv, PostgresStorage, sweepKv } from './openauth-pg-storage.js'
+import { KV_TABLE, migrateKv, PostgresStorage, sweepKv } from './openauth-pg-storage.js'
 
 /** What the app learns from a valid credential (same shape as the Better Auth adapter). */
 export type Credential = { type: 'session'; userId: string } | { type: 'client'; clientId: string; scopes: string[] }
@@ -161,9 +161,25 @@ export async function makeOpenAuth(cfg: OpenAuthConfig, lookupUser: UserLookup) 
     const headers = new Headers(req.headers)
     for (const h of ['x-forwarded-host', 'x-forwarded-proto', 'x-forwarded-port', 'host']) headers.delete(h)
     const body = req.method === 'GET' || req.method === 'HEAD' ? undefined : await req.arrayBuffer()
+    if (path === '/token' && body && !(await claimCode(body))) {
+      return json(400, { error: 'invalid_grant', error_description: 'Authorization code has been used or expired' })
+    }
     const res = await issuerApp.fetch(new Request(url, { method: req.method, headers, body, redirect: 'manual' }))
     if (path === '/token' && body && res.ok) return dropClientRefresh(body, res)
     return res
+  }
+
+  /** The issuer redeems a code with get-then-remove, so parallel requests with one code (and its
+   *  verifier) all got tokens (5 of 5 measured). Claim the code atomically first; one request wins. */
+  async function claimCode(body: ArrayBuffer): Promise<boolean> {
+    const form = new URLSearchParams(new TextDecoder().decode(body))
+    const code = form.get('code')
+    if (form.get('grant_type') !== 'authorization_code' || !code) return true
+    const r = await pool.query(
+      `insert into ${KV_TABLE} (key, value, expiry) values ($1, 'true', now() + interval '5 minutes') on conflict (key) do nothing`,
+      [joinKey(['oauth:code-claimed', code.replaceAll('\x1f', '')])],
+    )
+    return r.rowCount === 1
   }
 
   /** OpenAuth issues a refresh token with every client_credentials token, and its refresh grant
