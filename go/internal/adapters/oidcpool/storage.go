@@ -433,7 +433,11 @@ func (s *Issuer) GetPrivateClaimsFromScopes(context.Context, string, string, []s
 	return map[string]any{"token_use": "access"}, nil
 }
 
-func (s *Issuer) SetUserinfoFromScopes(context.Context, *oidc.UserInfo, string, string, []string) error {
+// SetUserinfoFromScopes: the library copies this UserInfo over the ID token's claims
+// (claims.SetUserInfo), subject included. Left empty, every ID token goes out with no `sub`
+// (stack h had that bug unnoticed: nothing read its ID tokens; Sign in with Shop does).
+func (s *Issuer) SetUserinfoFromScopes(_ context.Context, ui *oidc.UserInfo, userID, _ string, _ []string) error {
+	ui.Subject = userID
 	return nil
 }
 
