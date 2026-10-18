@@ -7,6 +7,7 @@ import (
 
 	"github.com/alexluong/platform-spike/go/internal/authz"
 	"github.com/alexluong/platform-spike/go/internal/core"
+	"github.com/alexluong/platform-spike/go/internal/identity"
 	"github.com/alexluong/platform-spike/go/internal/modules/scope"
 	"github.com/alexluong/platform-spike/go/internal/perm"
 	"github.com/jackc/pgx/v5"
@@ -16,6 +17,8 @@ type Module struct {
 	// MultiMerchant: a platform account may be a member of several merchants (SPEC §16.2,
 	// round-4 stacks). Off: one merchant per user (409 already_member).
 	MultiMerchant bool
+	// Pools: IdPs with a pool per merchant (SPEC §16.3 GET /identity); nil = no such endpoint.
+	Pools identity.Pools
 }
 
 // StatusSQL: the status a client sees. A merchant whose tenant pool is still being
@@ -31,7 +34,24 @@ func (m *Module) Ops() []core.Op {
 		{Action: "merchant.view", Method: "GET", Path: "/api/merchants/{mid}", Target: merchantTarget, Run: m.get},
 		{Action: "member.manage", Method: "POST", Path: "/api/merchants/{mid}/members", Status: 201, Target: merchantTarget, Run: m.addMember},
 		{Action: "member.manage", Method: "DELETE", Path: "/api/merchants/{mid}/members/{uid}", Status: 204, Target: merchantTarget, Run: m.removeMember},
-	}, m.invitationOps()...)
+	}, append(m.invitationOps(), core.Op{Auth: core.AuthPublic, Method: "GET", Path: "/api/merchants/{mid}/identity", Run: m.identity})...)
+}
+
+// identity: SPEC §16.3, no auth. The merchant's pool issuer (what a storefront or admin UI
+// starts a login with). Unknown merchant → 404.
+func (m *Module) identity(ctx context.Context, r *core.Req) (any, error) {
+	var exists bool
+	if err := r.Tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM merchants WHERE id=$1)`, r.Path("mid")).Scan(&exists); err != nil {
+		return nil, err
+	}
+	if !exists || m.Pools == nil {
+		return nil, core.ErrNotFound
+	}
+	out, err := m.Pools.PoolIdentity(ctx, r.Path("mid"))
+	if err != nil {
+		return nil, core.ErrNotFound // created, pool not started yet
+	}
+	return out, nil
 }
 
 func (m *Module) get(ctx context.Context, r *core.Req) (any, error) {

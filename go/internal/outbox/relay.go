@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sync"
 	"time"
 
 	"github.com/alexluong/platform-spike/go/internal/authz"
@@ -37,6 +38,12 @@ type Relay struct {
 	Partitioned bool
 	// Accepts filters the event types this consumer takes (nil = all).
 	Accepts func(evType string) bool
+	// Background: the request that wrote a row doesn't wait for it; only the background loop
+	// drains this consumer (stack i: provisioning a merchant's Zitadel instance takes seconds,
+	// SPEC §16.3 lets the merchant show "provisioning" meanwhile).
+	Background bool
+	// Workers: partitions drained in parallel (partitioned consumers; 0/1 = one at a time).
+	Workers int
 }
 
 func (r *Relay) consumer() string {
@@ -79,17 +86,31 @@ func (r *Relay) Drain(ctx context.Context) error {
 }
 
 func (r *Relay) drainPartitions(ctx context.Context, parts []string) error {
-	var errs []error
+	var (
+		mu   sync.Mutex
+		errs []error
+		wg   sync.WaitGroup
+	)
+	workers := max(r.Workers, 1)
+	sem := make(chan struct{}, workers)
 	seen := map[string]bool{}
 	for _, p := range parts {
 		if seen[p] {
 			continue
 		}
 		seen[p] = true
-		if err := r.drainPartition(ctx, &p); err != nil {
-			errs = append(errs, err)
-		}
+		sem <- struct{}{}
+		wg.Add(1)
+		go func(p string) {
+			defer func() { <-sem; wg.Done() }()
+			if err := r.drainPartition(ctx, &p); err != nil {
+				mu.Lock()
+				errs = append(errs, err)
+				mu.Unlock()
+			}
+		}(p)
 	}
+	wg.Wait()
 	return errors.Join(errs...)
 }
 
@@ -231,6 +252,9 @@ func (rs Relays) Routes(ev authz.Event) []core.Route {
 func (rs Relays) Drain(ctx context.Context, written []core.Route) error {
 	var errs []error
 	for _, r := range rs {
+		if r.Background {
+			continue
+		}
 		var parts []string
 		wrote := false
 		for _, w := range written {

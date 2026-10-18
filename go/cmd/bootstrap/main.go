@@ -138,6 +138,28 @@ func run(log *slog.Logger) error {
 			return err
 		}
 		out = cfg
+	case "zitadel-instances": // stack i: directory table, workforce and platform pools
+		pool, err := db.Open(ctx, env("DATABASE_URL", "postgres://app:app@localhost:5432/app"))
+		if err != nil {
+			return err
+		}
+		defer pool.Close()
+		if err := zitadel.MigrateInstances(ctx, pool); err != nil {
+			return err
+		}
+		x, err := zitadel.NewInstances(zitadel.InstancesConfig{
+			ZitadelURL: env("ZITADEL_URL", "http://i-zitadel:8080"), ExternalDomain: env("ZITADEL_EXTERNAL_DOMAIN", "workforce.zitadel.internal"),
+			ExternalOrigin: env("ZITADEL_EXTERNAL_ORIGIN", "http://workforce.zitadel.internal:8080"), KeysDir: env("ZITADEL_KEYS_DIR", "/keys"),
+			IDDomain: env("ID_DOMAIN", "cs.internal"), IDPort: env("ID_PORT", "8096"),
+			RedirectURI: env("DRIVER_REDIRECT_URI", "http://localhost:3999/callback"),
+		}, pool, log)
+		if err != nil {
+			return err
+		}
+		if err := retry(log, "zitadel workforce and platform pools", func() error { return x.BootstrapInstances(ctx) }); err != nil {
+			return err
+		}
+		out = map[string]any{"idp": "zitadel-instances"}
 	case "ory":
 		var cfg ory.Config
 		if err := retry(log, "hydra driver client", func() (err error) {

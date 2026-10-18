@@ -141,6 +141,10 @@ type At struct {
 
 // Call does a JSON request against one instance (or the system API with At{SystemHost}).
 func (z *Zitadel) Call(ctx context.Context, as *sysUser, at At, method, path string, body, out any) error {
+	return z.call(ctx, as, at, nil, method, path, body, out)
+}
+
+func (z *Zitadel) call(ctx context.Context, as *sysUser, at At, extra map[string]string, method, path string, body, out any) error {
 	var rd io.Reader
 	if body != nil {
 		b, err := json.Marshal(body)
@@ -165,6 +169,9 @@ func (z *Zitadel) Call(ctx context.Context, as *sysUser, at At, method, path str
 	req.Header.Set("x-zitadel-instance-host", at.InstanceHost)
 	if at.PublicHost != "" {
 		req.Header.Set("x-zitadel-public-host", at.PublicHost)
+	}
+	for k, v := range extra {
+		req.Header.Set(k, v)
 	}
 	resp, err := z.HTTP.Do(req)
 	if err != nil {

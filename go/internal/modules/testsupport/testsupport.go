@@ -32,9 +32,31 @@ func (m *Module) Ops() []core.Op {
 		{Auth: core.AuthPublic, Method: "GET", Path: "/api/_test/driver-config", Run: m.driverConfig},
 	}
 	if m.Pools != nil {
+		ops = append(ops, core.Op{Auth: core.AuthPublic, Method: "GET", Path: "/api/_test/home-realm", Run: m.homeRealm})
 		ops = append(ops, core.Op{Auth: core.AuthPublic, Method: "POST", Path: "/api/_test/merchants/{mid}/users", Status: 201, Run: m.createPoolUser})
 	}
 	return ops
+}
+
+// homeRealm: which platform-level kinds hold this email (identifier-first login: the driver
+// picks the platform-level pool from it, as a login page would ask "staff, merchant or Shop?").
+func (m *Module) homeRealm(ctx context.Context, r *core.Req) (any, error) {
+	if err := m.check(r); err != nil {
+		return nil, err
+	}
+	rows, err := r.Tx.Query(ctx, `SELECT kind FROM users WHERE pool='' AND email=$1 ORDER BY kind`, strings.ToLower(strings.TrimSpace(r.HTTP.URL.Query().Get("email"))))
+	if err != nil {
+		return nil, err
+	}
+	kinds := []string{}
+	for rows.Next() {
+		var k string
+		if err := rows.Scan(&k); err != nil {
+			return nil, err
+		}
+		kinds = append(kinds, k)
+	}
+	return map[string]any{"kinds": kinds}, rows.Err()
 }
 
 // createPoolUser: SPEC §16.4. An identity in the merchant's own pool plus its app record:

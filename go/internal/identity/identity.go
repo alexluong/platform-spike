@@ -57,4 +57,7 @@ type Pools interface {
 	// CreatePoolUser creates a password identity in merchantID's pool (test mode only).
 	// kind is "user" (the merchant's staff) or "customer" (its customers).
 	CreatePoolUser(ctx context.Context, merchantID, email, password, kind string) (subject string, err error)
+	// PoolIdentity: what a login UI needs to start a login at the merchant's pool; at least
+	// {"issuer"}. Errors when the merchant has no pool.
+	PoolIdentity(ctx context.Context, merchantID string) (map[string]any, error)
 }
