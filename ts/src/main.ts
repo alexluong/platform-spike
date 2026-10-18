@@ -4,7 +4,9 @@ import { sql } from 'drizzle-orm'
 import { fileURLToPath } from 'node:url'
 import pg from 'pg'
 import { z } from 'zod'
+import { eq } from 'drizzle-orm'
 import { makeBetterAuth, migrateBetterAuth, newInternalKey, API_SCOPE } from './adapters/better-auth.js'
+import { makeOpenAuth } from './adapters/openauth.js'
 import { makeCerbosAuthorizer } from './adapters/cerbos.js'
 import { makeDb, migrateApp } from './db/client.js'
 import { appUsers } from './db/schema.js'
@@ -32,7 +34,14 @@ const config = z
     DATABASE_URL: z.string(),
     CERBOS_ADDRESS: z.string().default('localhost:3593'),
     AUTH_BASE_URL: z.string().default('http://localhost:8083'),
-    AUTH_SECRET: z.string().min(32),
+    /** Identity adapter: Better Auth (stack c) or OpenAuth (stack g). */
+    IDENTITY: z.enum(['better-auth', 'openauth']).default('better-auth'),
+    AUTH_SECRET: z.string().min(32).optional(),
+    /** OpenAuth: the first-party login client and its redirect URIs (comma-separated). */
+    AUTH_CLIENT_ID: z.string().default('platform-cli'),
+    AUTH_REDIRECT_URIS: z.string().default('http://127.0.0.1/callback'),
+    AUTH_ACCESS_TTL: z.coerce.number().int().positive().default(900),
+    AUTH_REFRESH_TTL: z.coerce.number().int().positive().default(86_400),
     API_RESOURCE: z.string().default('urn:platform-spike:api'),
     AUTH_RATE_LIMIT: z.enum(['on', 'off']).default('on'),
     AUTH_IP_HEADER: z.string().optional(),
@@ -52,21 +61,40 @@ const pipPool = new pg.Pool({ ...poolOpts, max: 10 })
 const authPool = new pg.Pool({ ...poolOpts, max: 10 })
 const db = makeDb(pool)
 
-// Migrations (idempotent): Better Auth's tables, then ours.
-const identityConfig = {
-  pool: authPool,
-  baseUrl: config.AUTH_BASE_URL,
-  secret: config.AUTH_SECRET,
-  apiResource: config.API_RESOURCE,
-  rateLimit: config.AUTH_RATE_LIMIT === 'on',
-  ipHeader: config.AUTH_IP_HEADER,
-  internalKey: newInternalKey(),
+// Identity adapter (migrates its own tables), then the app's migrations.
+async function makeIdentity() {
+  if (config.IDENTITY === 'openauth') {
+    return makeOpenAuth(
+      {
+        pool: authPool,
+        baseUrl: config.AUTH_BASE_URL,
+        firstPartyClient: config.AUTH_CLIENT_ID,
+        redirectUris: config.AUTH_REDIRECT_URIS.split(',').map((x) => x.trim()),
+        apiScope: API_SCOPE,
+        accessTtlSeconds: config.AUTH_ACCESS_TTL,
+        refreshTtlSeconds: config.AUTH_REFRESH_TTL,
+      },
+      async (email) => (await makeDb(authPool).select({ id: appUsers.id }).from(appUsers).where(eq(appUsers.email, email)))[0],
+    )
+  }
+  if (!config.AUTH_SECRET) throw new Error('AUTH_SECRET (32+ chars) is required for Better Auth')
+  const identityConfig = {
+    pool: authPool,
+    baseUrl: config.AUTH_BASE_URL,
+    secret: config.AUTH_SECRET,
+    apiResource: config.API_RESOURCE,
+    rateLimit: config.AUTH_RATE_LIMIT === 'on',
+    ipHeader: config.AUTH_IP_HEADER,
+    internalKey: newInternalKey(),
+  }
+  await migrateBetterAuth(identityConfig)
+  const ba = makeBetterAuth(identityConfig)
+  return { ...ba, handler: (req: Request) => ba.auth.handler(req) }
 }
-await migrateBetterAuth(identityConfig)
+const identity = await makeIdentity()
 await migrateApp(db, fileURLToPath(new URL('../drizzle', import.meta.url)))
 
 // Adapters
-const identity = makeBetterAuth(identityConfig)
 const pip = makeAccessResolver(makeDb(pipPool))
 const authz = makeCerbosAuthorizer({ address: config.CERBOS_ADDRESS, pip })
 const resolvePrincipal = makePrincipalResolver(db, API_SCOPE)
@@ -101,7 +129,7 @@ const app = buildHttp({
     const cred = await identity.authenticate(header)
     return cred ? resolvePrincipal(cred, header!) : null
   },
-  authHandler: (req) => identity.auth.handler(req),
+  authHandler: identity.handler,
   authPaths: identity.exposedPaths,
   async health() {
     try {
@@ -127,4 +155,4 @@ const app = buildHttp({
     : undefined,
 })
 
-serve({ fetch: app.fetch, port: config.PORT }, (info) => console.log(`stack c app on :${info.port} (${registry.size} actions)`))
+serve({ fetch: app.fetch, port: config.PORT }, (info) => console.log(`app (${config.IDENTITY}) on :${info.port} (${registry.size} actions)`))

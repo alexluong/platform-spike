@@ -15,6 +15,7 @@
     "@cerbos/core": "0.33.1",
     "@cerbos/grpc": "^0.29.1",
     "@hono/node-server": "^2.1.4",
+    "@openauthjs/openauth": "0.4.3",
     "better-auth": "^1.7.7",
     "drizzle-orm": "^0.45.4",
     "hono": "^4.13.13",
