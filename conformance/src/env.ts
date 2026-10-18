@@ -1,5 +1,5 @@
 // Environment for the suite. See README.md.
-export const stackNames = ['a', 'b', 'c', 'd', 'e', 'a2', 'f', 'g', 'h'] as const
+export const stackNames = ['a', 'b', 'c', 'd', 'e', 'a2', 'f', 'g', 'h', 'i', 'h2'] as const
 export type StackName = (typeof stackNames)[number]
 
 function stackFromEnv(): StackName {

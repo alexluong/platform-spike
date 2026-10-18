@@ -5,8 +5,23 @@ export interface StackDriver {
   loginUser(email: string, password: string): Promise<string>
   /** Bearer token for apps and agents (client credentials or the stack's equivalent). */
   loginClient(clientId: string, clientSecret: string): Promise<string>
-  /** Optional test groups the stack opts into (SPEC §15.4: `idp-tenancy` for stacks d, e, a2). */
+  /**
+   * Optional test groups the stack opts into (SPEC §15.4: `idp-tenancy` for stacks d, e, a2;
+   * SPEC §16.6: `multi-pool` for stacks i, h2).
+   */
   features?: string[]
+  /**
+   * SPEC §16.4 (`multi-pool`): token from the merchant's tenant pool (its staff or its customers),
+   * through the stack's real login path. Rejects when the pool refuses (wrong password, another
+   * merchant's identity, merchant suspended).
+   */
+  loginTenant?(merchantId: string, kind: 'user' | 'customer', email: string, password: string): Promise<string>
+  /**
+   * SPEC §16.4/§16.5 (`multi-pool`): "Sign in with Shop". Log in at the merchant's tenant customers
+   * pool with the Shop account as the upstream OIDC provider; the driver drives both legs and returns
+   * a token issued by the merchant's tenant pool. Rejects when either leg refuses.
+   */
+  loginWithShop?(merchantId: string, shopEmail: string, shopPassword: string): Promise<string>
 }
 
 export class DriverNotImplementedError extends Error {

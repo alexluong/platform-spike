@@ -6,6 +6,7 @@ import {
   grantedAgent,
   installedApp,
   merchantWithStore,
+  multiPool,
   newCustomer,
   newMerchant,
   newSupport,
@@ -13,7 +14,11 @@ import {
   platformAdmin,
   registerApp,
   uniq,
+  waitActive,
 } from '../src/world'
+
+// SPEC §16.3: on `multi-pool` stacks a new merchant may be `provisioning` until its tenant pool exists.
+const newStatuses = multiPool ? ['active', 'provisioning'] : ['active']
 
 describe('platform admin: merchants', () => {
   test('creates a merchant → 201 {id, name, status: active}; owner gets owner at merchant scope', async () => {
@@ -21,7 +26,8 @@ describe('platform admin: merchants', () => {
     const owner = await newUser('user', { label: 'owner' })
     const name = uniq('merchant')
     const m = ok(await admin.api.post<Merchant>('/api/platform/merchants', { name, ownerUserId: owner.id }), 201)
-    expect(m).toMatchObject({ name, status: 'active' })
+    expect(m).toMatchObject({ name })
+    expect(newStatuses).toContain(m.status)
     expect(typeof m.id).toBe('string')
     // owner holds every grantable permission there
     ok(await owner.api.get(`/api/merchants/${m.id}`), 200)
@@ -32,12 +38,15 @@ describe('platform admin: merchants', () => {
     const admin = await platformAdmin()
     const m = await newMerchant()
     const body = ok(await admin.api.get<Items<Merchant>>('/api/platform/merchants'), 200)
-    expect(body.items.find((x) => x.id === m.id)).toMatchObject({ id: m.id, name: m.name, status: 'active' })
+    const listed = body.items.find((x) => x.id === m.id)
+    expect(listed).toMatchObject({ id: m.id, name: m.name })
+    expect(newStatuses).toContain(listed?.status)
   })
 
   test('suspend → {status: suspended}; reinstate → {status: active}; list reflects it', async () => {
     const admin = await platformAdmin()
     const m = await newMerchant()
+    if (multiPool) await waitActive(m)
     expect(ok(await admin.api.post(`/api/platform/merchants/${m.id}/suspend`), 200)).toMatchObject({ id: m.id, status: 'suspended' })
     let list = ok(await admin.api.get<Items<Merchant>>('/api/platform/merchants'), 200)
     expect(list.items.find((x) => x.id === m.id)?.status).toBe('suspended')
