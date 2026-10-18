@@ -56,6 +56,11 @@ func (x *Instances) Gateway(next http.Handler) http.Handler {
 			http.Error(w, "unknown identity host", http.StatusNotFound)
 			return
 		}
+		// A suspended merchant's pool: no logins, no tokens (keys and discovery stay readable).
+		if p.MerchantID != "" && r.URL.Path != "/oauth/v2/keys" && r.URL.Path != "/.well-known/openid-configuration" && x.blocked(r.Context(), p) {
+			loginError(w, http.StatusForbidden, "merchant suspended", nil)
+			return
+		}
 		if rest, ok := strings.CutPrefix(r.URL.Path, "/ui/v2/login/"); ok {
 			x.login(w, r, p, rest)
 			return

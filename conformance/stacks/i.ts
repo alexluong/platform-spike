@@ -106,24 +106,36 @@ async function redeem(s: Started, callbackUrl: string, redirectUri: string): Pro
   const cb = new URL(callbackUrl)
   const code = cb.searchParams.get('code')
   if (!code || cb.searchParams.get('state') !== s.state) throw new Error(`callback: bad ${callbackUrl}`)
-  // Zitadel reads the user from a projection when it issues the token: right after the user was
-  // created it can answer 404 User.NotFound (the code is not consumed then). Retry briefly.
+  const res = await fetch(`${s.target.issuer}/oauth/v2/token`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({ grant_type: 'authorization_code', code, redirect_uri: redirectUri, client_id: s.target.clientId, code_verifier: s.verifier }),
+    signal: AbortSignal.timeout(env.requestTimeoutMs),
+  })
+  return (await jsonOrThrow<{ access_token: string }>(res, `token at ${s.target.issuer}`)).access_token
+}
+
+/**
+ * Zitadel reads the user from a projection when it issues the token: right after the user was
+ * created the token request can fail with 404 User.NotFound, and the code is spent. A person
+ * would just try again; so does the driver (whole flow, a few times).
+ */
+async function retryFresh<T>(f: () => Promise<T>): Promise<T> {
   for (let attempt = 0; ; attempt++) {
-    const res = await fetch(`${s.target.issuer}/oauth/v2/token`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: new URLSearchParams({ grant_type: 'authorization_code', code, redirect_uri: redirectUri, client_id: s.target.clientId, code_verifier: s.verifier }),
-      signal: AbortSignal.timeout(env.requestTimeoutMs),
-    })
-    if (res.status === 404 && attempt < 20 && (await res.clone().text()).includes('User.NotFound')) {
-      await new Promise((r) => setTimeout(r, 250))
-      continue
+    try {
+      return await f()
+    } catch (e) {
+      if (attempt >= 4 || !/User\.NotFound|AuthRequest\.NoCode/.test(String(e))) throw e
+      await new Promise((r) => setTimeout(r, 300 * (attempt + 1)))
     }
-    return (await jsonOrThrow<{ access_token: string }>(res, `token at ${s.target.issuer}`)).access_token
   }
 }
 
-async function passwordLogin(target: Target, redirectUri: string, email: string, password: string): Promise<string> {
+function passwordLogin(target: Target, redirectUri: string, email: string, password: string): Promise<string> {
+  return retryFresh(() => passwordLoginOnce(target, redirectUri, email, password))
+}
+
+async function passwordLoginOnce(target: Target, redirectUri: string, email: string, password: string): Promise<string> {
   const s = await authorize(target, redirectUri)
   const { callbackUrl } = await jsonOrThrow<{ callbackUrl: string }>(
     await post(`${target.issuer}/ui/v2/login/password`, { authRequest: s.authRequest, loginName: email, password }),
@@ -196,7 +208,13 @@ const driver: StackDriver = {
     return passwordLogin(await tenant(merchantId, kind === 'user' ? 'staff' : 'customers'), cfg.redirectUri, email, password)
   },
 
-  async loginWithShop(merchantId, shopEmail, shopPassword) {
+  loginWithShop(merchantId, shopEmail, shopPassword) {
+    return retryFresh(() => shopLoginOnce(merchantId, shopEmail, shopPassword))
+  },
+}
+
+async function shopLoginOnce(merchantId: string, shopEmail: string, shopPassword: string): Promise<string> {
+  {
     const cfg = await config()
     const t = await tenant(merchantId, 'customers')
     const s = await authorize(t, cfg.redirectUri)
@@ -219,6 +237,6 @@ const driver: StackDriver = {
     if (done.pathname.endsWith('/idp/failed')) throw new Error(`Sign in with Shop failed: ${done}`)
     const { callbackUrl } = await jsonOrThrow<{ callbackUrl: string }>(await get(done.toString()), 'finish Sign in with Shop')
     return redeem(s, callbackUrl, cfg.redirectUri)
-  },
+  }
 }
 export default driver

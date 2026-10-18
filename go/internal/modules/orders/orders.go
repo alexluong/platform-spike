@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"math"
 	"net/http"
 
@@ -82,7 +83,6 @@ func (m *Module) place(ctx context.Context, r *core.Req) (any, error) {
 	if status == "suspended" {
 		return nil, core.ErrMerchantSuspended
 	}
-	customerID := r.P.ID
 	switch {
 	case r.P.HomeMerchantID != "":
 		// A customer of a merchant's own pool belongs to that merchant (all its stores, SPEC §16.1).
@@ -90,11 +90,12 @@ func (m *Module) place(ctx context.Context, r *core.Req) (any, error) {
 			return nil, core.ErrForbidden
 		}
 	case m.ShopLinks:
-		id, err := customers.Linked(ctx, r.Tx, r.Target.MerchantID, r.P.ID)
-		if err != nil {
+		// The first Shop order at a merchant creates its customer record linked to the Shop
+		// account. The order keeps the acting identity as customerId (the core contract: a
+		// customer's order names that customer); ownsSQL ties the two together.
+		if _, err := customers.Linked(ctx, r.Tx, r.Target.MerchantID, r.P.ID); err != nil {
 			return nil, err
 		}
-		customerID = id
 	}
 	var in struct {
 		Items []struct {
@@ -108,7 +109,7 @@ func (m *Module) place(ctx context.Context, r *core.Req) (any, error) {
 	if len(in.Items) == 0 {
 		return nil, core.BadInput("items are required")
 	}
-	o := scope.Order{ID: db.NewID("o"), StoreID: r.Target.Resource.ID, CustomerID: customerID, Status: "pending", Items: []scope.Item{}}
+	o := scope.Order{ID: db.NewID("o"), StoreID: r.Target.Resource.ID, CustomerID: r.P.ID, Status: "pending", Items: []scope.Item{}}
 	for _, it := range in.Items {
 		if it.Qty <= 0 || it.Qty > maxQty {
 			return nil, core.BadInput("qty must be 1..1000000")
@@ -157,9 +158,10 @@ func (m *Module) listStore(ctx context.Context, r *core.Req) (any, error) {
 func (m *Module) get(ctx context.Context, r *core.Req) (any, error) {
 	o := scope.OrderOf(r)
 	if r.P.Kind == perm.KindCustomer && o.CustomerID != r.P.ID {
-		var mine bool
-		if m.ShopLinks && r.P.HomeMerchantID == "" { // a Shop buyer owns its linked records' orders
-			if err := r.Tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM users WHERE id=$1 AND shop_account_id=$2)`, o.CustomerID, r.P.ID).Scan(&mine); err != nil {
+		mine := false
+		if m.ShopLinks {
+			where, args := m.ownsSQL(r.P)
+			if err := r.Tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM orders WHERE id=$`+fmt.Sprint(len(args)+1)+` AND (`+where+`))`, append(args, o.ID)...).Scan(&mine); err != nil {
 				return nil, err
 			}
 		}
@@ -174,12 +176,21 @@ func (m *Module) mine(ctx context.Context, r *core.Req) (any, error) {
 	if r.P.Kind != perm.KindCustomer {
 		return nil, core.ErrForbidden
 	}
-	if m.ShopLinks && r.P.HomeMerchantID == "" {
-		// Shop history: every merchant's record linked to this Shop account (SPEC §16.5).
-		return collect(r.Tx.Query(ctx, `SELECT `+scope.OrderCols+` FROM orders WHERE customer_id=$1
-			OR customer_id IN (SELECT id FROM users WHERE shop_account_id=$1) ORDER BY created_at`, r.P.ID))
+	where, args := m.ownsSQL(r.P)
+	return collect(r.Tx.Query(ctx, `SELECT `+scope.OrderCols+` FROM orders WHERE `+where+` ORDER BY created_at`, args...))
+}
+
+// ownsSQL: the orders a customer owns (SPEC §16.5). A Shop buyer: its own (placed with the Shop
+// token at any merchant) and those of its linked records. A Shop-linked record at M: its own and
+// the Shop account's orders at M. Anyone else: their own.
+func (m *Module) ownsSQL(p *core.Principal) (string, []any) {
+	switch {
+	case m.ShopLinks && p.HomeMerchantID == "":
+		return `customer_id=$1 OR customer_id IN (SELECT id FROM users WHERE shop_account_id=$1)`, []any{p.ID}
+	case m.ShopLinks && p.ShopAccountID != "":
+		return `customer_id=$1 OR (customer_id=$2 AND merchant_id=$3)`, []any{p.ID, p.ShopAccountID, p.HomeMerchantID}
 	}
-	return collect(r.Tx.Query(ctx, `SELECT `+scope.OrderCols+` FROM orders WHERE customer_id=$1 ORDER BY created_at`, r.P.ID))
+	return `customer_id=$1`, []any{p.ID}
 }
 
 func (m *Module) cancel(ctx context.Context, r *core.Req) (any, error) {

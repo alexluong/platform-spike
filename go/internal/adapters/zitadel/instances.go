@@ -589,23 +589,6 @@ func (x *Instances) provisionMerchant(ctx context.Context, mid string) error {
 	return nil
 }
 
-func (x *Instances) waitBlocked(ctx context.Context, p *Pool, block bool) error {
-	if !block {
-		return x.waitLoginReady(ctx, p)
-	}
-	for i := 0; i < 100; i++ {
-		if st := x.authorizeStatus(ctx, p); st == http.StatusTooManyRequests {
-			return nil
-		}
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(100 * time.Millisecond):
-		}
-	}
-	return fmt.Errorf("pool %s: block not effective yet", p.Key)
-}
-
 // authorizeStatus: the status of an authorization request at the pool (302 = login can start,
 // 429 = instance blocked), 0 on transport errors.
 func (x *Instances) authorizeStatus(ctx context.Context, p *Pool) int {
@@ -661,41 +644,47 @@ func (x *Instances) setBlocked(ctx context.Context, p *Pool, block bool) error {
 // blockMerchant (suspend/reinstate): record the desired state; apply it now if the instance
 // exists (else provisioning applies it at the end).
 func (x *Instances) blockMerchant(ctx context.Context, mid string, block bool) error {
-	tx, err := x.db.Begin(ctx)
+	// 1. The desired state in the directory, committed first: the gateway reads it on every
+	//    login and token request of the pool, so logins stop (or resume) as soon as this
+	//    commits. Zitadel's own block (below) is read from a projection and lags under load.
+	np := x.newPool(MerchantPool(mid), mid)
+	p, err := scanPool(x.db.QueryRow(ctx, `INSERT INTO zitadel_pools(pool, merchant_id, label, instance_domain, public_host, issuer, blocked)
+		VALUES ($1,$2,$3,$4,$5,$6,$7) ON CONFLICT (pool) DO UPDATE SET blocked=excluded.blocked RETURNING `+poolCols,
+		np.Key, mid, np.Label, np.InstanceDomain, np.PublicHost, np.Issuer, block))
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback(context.WithoutCancel(ctx))
-	p, err := scanPool(tx.QueryRow(ctx, `UPDATE zitadel_pools SET blocked=$2 WHERE pool=$1 RETURNING `+poolCols, MerchantPool(mid), block))
-	if errors.Is(err, pgx.ErrNoRows) {
-		// No row yet: provisioning hasn't started. Create it with the desired state.
-		np := x.newPool(MerchantPool(mid), mid)
-		if _, err := tx.Exec(ctx, `INSERT INTO zitadel_pools(pool, merchant_id, label, instance_domain, public_host, issuer, blocked)
-			VALUES ($1,$2,$3,$4,$5,$6,$7) ON CONFLICT (pool) DO UPDATE SET blocked=excluded.blocked`,
-			np.Key, mid, np.Label, np.InstanceDomain, np.PublicHost, np.Issuer, block); err != nil {
-			return err
-		}
-		return tx.Commit(ctx)
-	} else if err != nil {
+	if p.Status != "active" {
+		return nil // provisioning applies the desired state at its end
+	}
+	// 2. Zitadel: SetLimits block, so the instance refuses everything (also requests that
+	//    don't pass the gateway). Keys first: a blocked instance also refuses its JWKS.
+	if block {
+		ks := x.keysFor(p)
+		ks.mu.Lock()
+		_ = ks.fetch(ctx)
+		ks.mu.Unlock()
+	}
+	if err := x.setBlocked(ctx, p, block); err != nil {
 		return err
 	}
-	if p.Status == "active" {
-		if block { // keep the keys verifiable while blocked (verify.go)
-			ks := x.keysFor(p)
-			ks.mu.Lock()
-			_ = ks.fetch(ctx)
-			ks.mu.Unlock()
-		}
-		if err := x.setBlocked(ctx, p, block); err != nil {
-			return err
-		}
-		// Read-your-writes for logins: the block is read from a projection. Wait until an
-		// authorization request sees it, so the next login after suspend/reinstate answers does.
-		if err := x.waitBlocked(ctx, p, block); err != nil {
-			return err
+	if !block {
+		// Logins resume only once Zitadel's projection has the unblock; wait a little so the
+		// next login after reinstate usually works, without holding the request for long.
+		wctx, cancel := context.WithTimeout(ctx, 8*time.Second)
+		defer cancel()
+		if err := x.waitLoginReady(wctx, p); err != nil {
+			x.log.Warn("unblock not visible yet", "pool", p.Key, "err", err)
 		}
 	}
-	return tx.Commit(ctx)
+	return nil
+}
+
+// Blocked: the directory's desired state (gateway check, not cached).
+func (x *Instances) blocked(ctx context.Context, p *Pool) bool {
+	var b bool
+	_ = x.db.QueryRow(ctx, `SELECT blocked FROM zitadel_pools WHERE pool=$1`, p.Key).Scan(&b)
+	return b
 }
 
 // PoolEvents: what the provisioning consumer takes (background: provisioning takes seconds).
