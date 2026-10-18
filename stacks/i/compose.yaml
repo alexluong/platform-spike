@@ -58,9 +58,15 @@ services:
         {"provisioner":{"Path":"/keys/provisioner.pub","Memberships":[{"MemberType":"System","Roles":["SYSTEM_OWNER","IAM_OWNER"]}]},
          "login":{"Path":"/keys/login.pub","Memberships":[{"MemberType":"System","Roles":["IAM_LOGIN_CLIENT"]}]}}
       # Outgoing calls (the Shop IdP's discovery/token/keys at the platform issuer) go to the app
-      # container on the compose network (192.168.x / 172.x). Zitadel's SSRF deny list blocks
-      # private ranges by default; this keeps the rest of the default list.
-      ZITADEL_HTTPCLIENT_DENYLIST: "localhost,0.0.0.0/8,10.0.0.0/8,100.64.0.0/10,127.0.0.0/8,169.254.0.0/16,198.18.0.0/15,::/128,::1/128,fc00::/7,fe80::/10"
+      # on network i-fed (192.168.255.248/29: only Zitadel and the app). Zitadel's SSRF deny list
+      # blocks every private range (its default) except that /29, and its gateway .249 (the
+      # docker host) is denied too. Before review-i the list dropped 172.16/12 and 192.168/16
+      # whole: anyone with IAM_OWNER on any instance (the app's provisioner key; later a
+      # merchant configuring its own SSO or Actions) could make Zitadel fetch the compose
+      # network, the docker host and the home LAN, with response bodies echoed in the error
+      # (results/review-i.md #3). Production: point the Shop IdP at the public issuer through
+      # the ingress, or send outbound calls through an egress proxy, and keep the default list.
+      ZITADEL_HTTPCLIENT_DENYLIST: "localhost,0.0.0.0/8,10.0.0.0/8,100.64.0.0/10,127.0.0.0/8,169.254.0.0/16,172.16.0.0/12,198.18.0.0/15,::/128,::1/128,fc00::/7,fe80::/10,192.168.0.0/17,192.168.128.0/18,192.168.192.0/19,192.168.224.0/20,192.168.240.0/21,192.168.248.0/22,192.168.252.0/23,192.168.254.0/24,192.168.255.0/25,192.168.255.128/26,192.168.255.192/27,192.168.255.224/28,192.168.255.240/29,192.168.255.249/32"
       # Scheduled projections run only for instances with a projection-relevant event in the
       # last 2 min, at most 200 of them (default: every instance every RequeueEvery, 60 s, so idle
       # CPU grows with the instance count; results/i.md). Queries trigger projections on demand.
@@ -70,7 +76,7 @@ services:
       # Relative: the login UI lives on whatever host the issuer is served on (the gateway).
       ZITADEL_OIDC_DEFAULTLOGINURLV2: /ui/v2/login/login?authRequest=
     volumes: [i-keys:/keys:ro]
-    networks: [i-net]
+    networks: [i-net, i-fed]
     mem_limit: 2g
     depends_on:
       i-postgres: {condition: service_healthy}
@@ -136,8 +142,9 @@ services:
     ports: ["8096:8096"]
     volumes: [i-keys:/keys:ro]
     networks:
-      i-net:
-        # Zitadel fetches the Shop upstream's discovery/token endpoints server-side.
+      i-net: {}
+      i-fed:
+        # Zitadel fetches the Shop upstream's discovery/token endpoints server-side, on i-fed only.
         aliases: ["platform.${STACK_I_ID_DOMAIN:-cs.internal}"]
     mem_limit: 384m
     restart: unless-stopped
@@ -151,6 +158,10 @@ services:
 
 networks:
   i-net: {}
+  # Zitadel → app (Shop federation back channel) only; the one private range Zitadel may dial.
+  i-fed:
+    ipam:
+      config: [{subnet: 192.168.255.248/29, gateway: 192.168.255.249}]
 
 volumes:
   i-pg: {}
