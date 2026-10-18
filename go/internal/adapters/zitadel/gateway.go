@@ -173,22 +173,44 @@ func (x *Instances) authRequest(ctx context.Context, p *Pool, id string) (authRe
 // findUser: the user with this email in the org the auth request is for (the org scope).
 // Without an org scope, a login must name exactly one user in the instance.
 func (x *Instances) findUser(ctx context.Context, p *Pool, orgID, email string) (string, error) {
-	queries := []any{map[string]any{"emailQuery": map[string]any{"emailAddress": email, "method": "TEXT_QUERY_METHOD_EQUALS_IGNORE_CASE"}}}
-	if orgID != "" {
-		queries = append(queries, map[string]any{"organizationIdQuery": map[string]any{"organizationId": orgID}})
+	// Password users have username <org name>.<email> (instances.go); Shop-linked users
+	// (shop.<id>) and other orgs' users never match, even with the same email.
+	org := ""
+	for name, id := range p.Orgs {
+		if id == orgID {
+			org = name
+		}
 	}
-	var out struct {
-		Result []struct {
-			UserID string `json:"userId"`
-		} `json:"result"`
+	if org == "" {
+		return "", errors.New("auth request has no known org scope")
 	}
-	if err := x.z.Call(ctx, x.z.Login, p.at(), "POST", "/v2/users", map[string]any{"queries": queries}, &out); err != nil {
-		return "", err
+	queries := []any{
+		map[string]any{"userNameQuery": map[string]any{"userName": org + "." + email, "method": "TEXT_QUERY_METHOD_EQUALS_IGNORE_CASE"}},
+		map[string]any{"organizationIdQuery": map[string]any{"organizationId": orgID}},
 	}
-	if len(out.Result) != 1 {
-		return "", fmt.Errorf("%d users match", len(out.Result))
+	// The user list is a projection: a user created a moment ago may not be in it yet. A real
+	// login UI has the same lag; retry briefly before saying "unknown user".
+	for attempt := 0; ; attempt++ {
+		var out struct {
+			Result []struct {
+				UserID string `json:"userId"`
+			} `json:"result"`
+		}
+		if err := x.z.Call(ctx, x.z.Login, p.at(), "POST", "/v2/users", map[string]any{"queries": queries}, &out); err != nil {
+			return "", err
+		}
+		if len(out.Result) == 1 {
+			return out.Result[0].UserID, nil
+		}
+		if len(out.Result) > 1 || attempt >= 20 {
+			return "", fmt.Errorf("%d users match", len(out.Result))
+		}
+		select {
+		case <-ctx.Done():
+			return "", ctx.Err()
+		case <-time.After(150 * time.Millisecond):
+		}
 	}
-	return out.Result[0].UserID, nil
 }
 
 type session struct {
@@ -303,10 +325,17 @@ func (x *Instances) finishShop(ctx context.Context, p *Pool, authRequestID, inte
 		}
 	}
 	var s session
-	if err := x.z.Call(ctx, x.z.Login, p.at(), "POST", "/v2/sessions", map[string]any{
-		"checks": map[string]any{"user": map[string]any{"userId": uid}, "idpIntent": map[string]any{"idpIntentId": intentID, "idpIntentToken": intentToken}},
-	}, &s); err != nil {
-		return "", 401, err
+	for attempt := 0; ; attempt++ { // a just-created user may not be in the projection yet
+		err := x.z.Call(ctx, x.z.Login, p.at(), "POST", "/v2/sessions", map[string]any{
+			"checks": map[string]any{"user": map[string]any{"userId": uid}, "idpIntent": map[string]any{"idpIntentId": intentID, "idpIntentToken": intentToken}},
+		}, &s)
+		if err == nil {
+			break
+		}
+		if !IsNotFound(err) || attempt >= 20 {
+			return "", 401, err
+		}
+		time.Sleep(150 * time.Millisecond)
 	}
 	cb, err := x.finalize(ctx, p, authRequestID, s)
 	if err != nil {

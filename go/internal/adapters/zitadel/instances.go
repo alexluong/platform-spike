@@ -26,6 +26,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"net/url"
 	"strings"
 	"sync"
@@ -547,6 +548,19 @@ func (x *Instances) provisionMerchant(ctx context.Context, mid string) error {
 			return err
 		}
 	}
+	// Zitadel serves from projections: the instance domain, the trusted domain and the login
+	// app become visible some time after the writes. Don't report the pool ready before a
+	// login can start: an authorization request through the public host must redirect.
+	if err := x.waitLoginReady(ctx, p); err != nil {
+		return err
+	}
+	ks := x.keysFor(p) // first copy of the pool's keys in the directory
+	ks.mu.Lock()
+	err = ks.fetch(ctx)
+	ks.mu.Unlock()
+	if err != nil {
+		return fmt.Errorf("jwks: %w", err)
+	}
 	// Last: apply the merchant's desired block state (it may have been suspended meanwhile)
 	// under the row lock that suspend/reinstate take too, then go active.
 	tx, err := x.db.Begin(ctx)
@@ -573,6 +587,68 @@ func (x *Instances) provisionMerchant(ctx context.Context, mid string) error {
 		return x.OnReady(ctx, mid)
 	}
 	return nil
+}
+
+func (x *Instances) waitBlocked(ctx context.Context, p *Pool, block bool) error {
+	if !block {
+		return x.waitLoginReady(ctx, p)
+	}
+	for i := 0; i < 100; i++ {
+		if st := x.authorizeStatus(ctx, p); st == http.StatusTooManyRequests {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(100 * time.Millisecond):
+		}
+	}
+	return fmt.Errorf("pool %s: block not effective yet", p.Key)
+}
+
+// authorizeStatus: the status of an authorization request at the pool (302 = login can start,
+// 429 = instance blocked), 0 on transport errors.
+func (x *Instances) authorizeStatus(ctx context.Context, p *Pool) int {
+	q := url.Values{"client_id": {p.ClientID}, "redirect_uri": {x.cfg.RedirectURI}, "response_type": {"code"}, "scope": {"openid"},
+		"code_challenge": {"E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"}, "code_challenge_method": {"S256"}}
+	hc := &http.Client{Timeout: 10 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	req, _ := http.NewRequestWithContext(ctx, "GET", x.z.Base+"/oauth/v2/authorize?"+q.Encode(), nil)
+	req.Header.Set("x-zitadel-instance-host", p.InstanceDomain)
+	req.Header.Set("x-zitadel-public-host", p.PublicHost)
+	resp, err := hc.Do(req)
+	if err != nil {
+		return 0
+	}
+	resp.Body.Close()
+	return resp.StatusCode
+}
+
+func (x *Instances) waitLoginReady(ctx context.Context, p *Pool) error {
+	q := url.Values{"client_id": {p.ClientID}, "redirect_uri": {x.cfg.RedirectURI}, "response_type": {"code"}, "scope": {"openid"},
+		"code_challenge": {"E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"}, "code_challenge_method": {"S256"}}
+	hc := &http.Client{Timeout: 10 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	var last string
+	for i := 0; i < 200; i++ {
+		req, _ := http.NewRequestWithContext(ctx, "GET", x.z.Base+"/oauth/v2/authorize?"+q.Encode(), nil)
+		req.Header.Set("x-zitadel-instance-host", p.InstanceDomain)
+		req.Header.Set("x-zitadel-public-host", p.PublicHost)
+		resp, err := hc.Do(req)
+		if err == nil {
+			resp.Body.Close()
+			if resp.StatusCode == http.StatusFound || resp.StatusCode == http.StatusSeeOther {
+				return nil
+			}
+			last = resp.Status
+		} else {
+			last = err.Error()
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(150 * time.Millisecond):
+		}
+	}
+	return fmt.Errorf("pool %s: login not ready (%s)", p.Key, last)
 }
 
 // setBlocked: SetLimits block. A blocked instance refuses every request except the system
@@ -604,7 +680,18 @@ func (x *Instances) blockMerchant(ctx context.Context, mid string, block bool) e
 		return err
 	}
 	if p.Status == "active" {
+		if block { // keep the keys verifiable while blocked (verify.go)
+			ks := x.keysFor(p)
+			ks.mu.Lock()
+			_ = ks.fetch(ctx)
+			ks.mu.Unlock()
+		}
 		if err := x.setBlocked(ctx, p, block); err != nil {
+			return err
+		}
+		// Read-your-writes for logins: the block is read from a projection. Wait until an
+		// authorization request sees it, so the next login after suspend/reinstate answers does.
+		if err := x.waitBlocked(ctx, p, block); err != nil {
 			return err
 		}
 	}
@@ -695,12 +782,9 @@ func (x *Instances) CreateUser(ctx context.Context, email, password, kind string
 		return "", err
 	}
 	// Usernames are unique per instance: the platform instance holds accounts and Shop
-	// buyers, so the same email can't be both unless the username differs. Prefix the org.
-	username := email
-	if poolKey == PoolPlatform {
-		username = org + "." + email
-	}
-	id, err := x.createHuman(ctx, p, p.Orgs[org], username, email, password)
+	// buyers, so the same email can't be both unless the username differs. Username =
+	// <org>.<email> everywhere; the login stand-in looks users up by it.
+	id, err := x.createHuman(ctx, p, p.Orgs[org], org+"."+email, email, password)
 	if err != nil {
 		return "", err
 	}

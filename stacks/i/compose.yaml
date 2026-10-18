@@ -57,6 +57,10 @@ services:
       ZITADEL_SYSTEMAPIUSERS: >-
         {"provisioner":{"Path":"/keys/provisioner.pub","Memberships":[{"MemberType":"System","Roles":["SYSTEM_OWNER","IAM_OWNER"]}]},
          "login":{"Path":"/keys/login.pub","Memberships":[{"MemberType":"System","Roles":["IAM_LOGIN_CLIENT"]}]}}
+      # Outgoing calls (the Shop IdP's discovery/token/keys at the platform issuer) go to the app
+      # container on the compose network (192.168.x / 172.x). Zitadel's SSRF deny list blocks
+      # private ranges by default; this keeps the rest of the default list.
+      ZITADEL_HTTPCLIENT_DENYLIST: "localhost,0.0.0.0/8,10.0.0.0/8,100.64.0.0/10,127.0.0.0/8,169.254.0.0/16,198.18.0.0/15,::/128,::1/128,fc00::/7,fe80::/10"
       ZITADEL_DEFAULTINSTANCE_FEATURES_LOGINV2_REQUIRED: "true"
       # Relative: the login UI lives on whatever host the issuer is served on (the gateway).
       ZITADEL_OIDC_DEFAULTLOGINURLV2: /ui/v2/login/login?authRequest=

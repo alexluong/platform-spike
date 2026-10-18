@@ -38,12 +38,26 @@ type keySet struct {
 	tried   time.Time
 }
 
+// fetch gets the pool's JWKS from Zitadel and keeps a copy in the directory row, so another app
+// instance (or this one after a restart) can still verify while the instance is unreachable or
+// blocked (a suspended merchant's instance refuses /oauth/v2/keys too).
 func (k *keySet) fetch(ctx context.Context) error {
 	var set jose.JSONWebKeySet
 	if err := k.x.z.Call(ctx, nil, k.pool.at(), "GET", "/oauth/v2/keys", nil, &set); err != nil {
+		if k.fetched.IsZero() {
+			var raw []byte
+			if k.x.db.QueryRow(ctx, `SELECT jwks FROM zitadel_pools WHERE pool=$1 AND jwks IS NOT NULL`, k.pool.Key).Scan(&raw) == nil &&
+				json.Unmarshal(raw, &set) == nil && len(set.Keys) > 0 {
+				k.keys, k.fetched = set, time.Now().Add(-keyRefresh) // stale: try Zitadel again later
+				return nil
+			}
+		}
 		return err
 	}
 	k.keys, k.fetched = set, time.Now()
+	if raw, err := json.Marshal(set); err == nil {
+		_, _ = k.x.db.Exec(ctx, `UPDATE zitadel_pools SET jwks=$2 WHERE pool=$1 AND jwks IS DISTINCT FROM $2::jsonb`, k.pool.Key, raw)
+	}
 	return nil
 }
 

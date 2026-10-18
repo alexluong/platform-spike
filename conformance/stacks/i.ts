@@ -106,16 +106,21 @@ async function redeem(s: Started, callbackUrl: string, redirectUri: string): Pro
   const cb = new URL(callbackUrl)
   const code = cb.searchParams.get('code')
   if (!code || cb.searchParams.get('state') !== s.state) throw new Error(`callback: bad ${callbackUrl}`)
-  const tok = await jsonOrThrow<{ access_token: string }>(
-    await fetch(`${s.target.issuer}/oauth/v2/token`, {
+  // Zitadel reads the user from a projection when it issues the token: right after the user was
+  // created it can answer 404 User.NotFound (the code is not consumed then). Retry briefly.
+  for (let attempt = 0; ; attempt++) {
+    const res = await fetch(`${s.target.issuer}/oauth/v2/token`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
       body: new URLSearchParams({ grant_type: 'authorization_code', code, redirect_uri: redirectUri, client_id: s.target.clientId, code_verifier: s.verifier }),
       signal: AbortSignal.timeout(env.requestTimeoutMs),
-    }),
-    `token at ${s.target.issuer}`,
-  )
-  return tok.access_token
+    })
+    if (res.status === 404 && attempt < 20 && (await res.clone().text()).includes('User.NotFound')) {
+      await new Promise((r) => setTimeout(r, 250))
+      continue
+    }
+    return (await jsonOrThrow<{ access_token: string }>(res, `token at ${s.target.issuer}`)).access_token
+  }
 }
 
 async function passwordLogin(target: Target, redirectUri: string, email: string, password: string): Promise<string> {
