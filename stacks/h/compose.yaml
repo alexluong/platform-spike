@@ -66,6 +66,9 @@ services:
       DRIVER_REDIRECT_URI: http://127.0.0.1/callback
       ACCESS_TOKEN_TTL: 15m
       REFRESH_TOKEN_TTL: 24h
+      # argon2id allocates 19 MiB per hash; without a GC target near mem_limit (256m) a
+      # burst of logins leaves enough garbage for the kernel to OOM-kill the app.
+      GOMEMLIMIT: 200MiB
       STACK_CONFIG: /tmp/stack.json
       TEST_MODE: "1"
       TEST_SECRET: ${TEST_SECRET:-test-secret}
