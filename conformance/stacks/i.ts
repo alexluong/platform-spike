@@ -192,7 +192,7 @@ const driver: StackDriver = {
         body: new URLSearchParams({ grant_type: 'client_credentials', scope: `openid urn:zitadel:iam:org:project:id:${cfg.user.projectId}:aud` }),
         signal: AbortSignal.timeout(env.requestTimeoutMs),
       })
-      if ((res.status === 400 || res.status === 401) && attempt < 20) {
+      if ((res.status === 400 || res.status === 401) && attempt < 40) {
         const text = await res.clone().text()
         if (text.includes('NotExisting') || text.includes('NotFound') || text.includes('client not found')) {
           await new Promise((r) => setTimeout(r, 250))

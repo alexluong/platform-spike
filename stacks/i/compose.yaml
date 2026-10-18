@@ -62,9 +62,10 @@ services:
       # private ranges by default; this keeps the rest of the default list.
       ZITADEL_HTTPCLIENT_DENYLIST: "localhost,0.0.0.0/8,10.0.0.0/8,100.64.0.0/10,127.0.0.0/8,169.254.0.0/16,198.18.0.0/15,::/128,::1/128,fc00::/7,fe80::/10"
       # Scheduled projections run only for instances with a projection-relevant event in the
-      # last 30 min (default 0 = every instance every RequeueEvery, 60 s): idle CPU grows with
-      # the instance count otherwise (results/i.md). Queries still trigger projections on demand.
-      ZITADEL_PROJECTIONS_HANDLEACTIVEINSTANCES: ${STACK_I_ACTIVE_INSTANCES:-30m}
+      # last 2 min, at most 200 of them (default: every instance every RequeueEvery, 60 s, so idle
+      # CPU grows with the instance count; results/i.md). Queries trigger projections on demand.
+      ZITADEL_PROJECTIONS_HANDLEACTIVEINSTANCES: ${STACK_I_ACTIVE_INSTANCES:-2m}
+      ZITADEL_PROJECTIONS_MAXACTIVEINSTANCES: ${STACK_I_MAX_ACTIVE_INSTANCES:-200}
       ZITADEL_DEFAULTINSTANCE_FEATURES_LOGINV2_REQUIRED: "true"
       # Relative: the login UI lives on whatever host the issuer is served on (the gateway).
       ZITADEL_OIDC_DEFAULTLOGINURLV2: /ui/v2/login/login?authRequest=

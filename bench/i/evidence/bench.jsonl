@@ -31,3 +31,10 @@
 {"at":"2026-10-18T20:58:17.931Z","name":"Sign in with Shop (both legs)","n":20,"p50":213,"p95":330,"max":330}
 {"at":"2026-10-18T20:58:18.396Z","name":"GET /api/me with a tenant token","n":50,"p50":6,"p95":11,"max":17}
 {"at":"2026-10-18T21:42:37.422Z","name":"failure story","states":["create 201 provisioning","after 20 s with Zitadel down: 200 provisioning","store create while provisioning: 201","active 36567 ms after 'start i-zitadel' (total 56799 ms)"]}
+{"at":"2026-10-18T22:10:37.728Z","name":"workforce (platform staff)","n":20,"p50":121,"p95":235,"max":235}
+{"at":"2026-10-18T22:10:40.591Z","name":"platform (account/owner)","n":20,"p50":130,"p95":244,"max":244}
+{"at":"2026-10-18T22:10:44.193Z","name":"shop (buyer, platform instance)","n":20,"p50":170,"p95":263,"max":263}
+{"at":"2026-10-18T22:10:46.778Z","name":"tenant staff","n":20,"p50":123,"p95":196,"max":196}
+{"at":"2026-10-18T22:10:49.274Z","name":"tenant customer","n":20,"p50":129,"p95":165,"max":165}
+{"at":"2026-10-18T22:10:56.544Z","name":"Sign in with Shop (both legs)","n":20,"p50":371,"p95":467,"max":467}
+{"at":"2026-10-18T22:10:57.014Z","name":"GET /api/me with a tenant token","n":50,"p50":7,"p95":11,"max":15}
