@@ -1,9 +1,10 @@
 package oidcpool
 
-// Integration tests: the issuer on a real Postgres (OIDCOP_TEST_DATABASE_URL), served by
+// Integration tests (stack h checklist, run against the platform pool; pool-specific tests in
+// pools_test.go): the issuer on a real Postgres (OIDCPOOL_TEST_DATABASE_URL), served by
 // httptest. Each pins one item of the in-house issuer checklist (results/h.md).
 //
-//	OIDCOP_TEST_DATABASE_URL=postgres://postgres:…@localhost:15432/issuer_test go test ./internal/adapters/oidcop
+//	OIDCPOOL_TEST_DATABASE_URL=postgres://postgres:…@localhost:15432/issuer_test go test ./internal/adapters/oidcpool
 
 import (
 	"context"
@@ -49,9 +50,9 @@ var setupOnce sync.Once
 
 func newEnv(t *testing.T) *env {
 	t.Helper()
-	dsn := os.Getenv("OIDCOP_TEST_DATABASE_URL")
+	dsn := os.Getenv("OIDCPOOL_TEST_DATABASE_URL")
 	if dsn == "" {
-		t.Skip("OIDCOP_TEST_DATABASE_URL not set")
+		t.Skip("OIDCPOOL_TEST_DATABASE_URL not set")
 	}
 	ctx := context.Background()
 	pool, err := pgxpool.New(ctx, dsn)
@@ -63,7 +64,8 @@ func newEnv(t *testing.T) *env {
 		if err := Migrate(ctx, pool); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := pool.Exec(ctx, `TRUNCATE idp_users, idp_clients, idp_auth_requests, idp_refresh_tokens, idp_signing_keys`); err != nil {
+		if _, err := pool.Exec(ctx, `TRUNCATE idp_users, idp_clients, idp_auth_requests, idp_refresh_tokens, idp_signing_keys, idp_federation_states;
+			DELETE FROM idp_pools WHERE kind='tenant'`); err != nil {
 			t.Fatal(err)
 		}
 	})
@@ -80,12 +82,13 @@ func startIssuer(t *testing.T, pool *pgxpool.Pool, issuer string) *env {
 	}
 	base := "http://" + ln.Addr().String()
 	if issuer == "" {
-		issuer = base + "/oidc"
+		issuer = base
 	}
 	iss, err := New(context.Background(), pool, Config{
-		Issuer: issuer, LoginURL: base + "/login", Secret: "test-secret-0123456789abcdef-0123456789",
-		Audience: "platform-api", LoginClientID: "platform-cli", RedirectURIs: []string{redirect},
-		AccessTTL: 15 * time.Minute, RefreshTTL: time.Hour,
+		PublicURL: issuer, InternalURL: base, Secret: "test-secret-0123456789abcdef-0123456789",
+		Audience: "platform-api", LoginClientID: "platform-cli", StaffClientID: "merchant-admin", ShopperClient: "storefront",
+		RedirectURIs: []string{redirect}, AccessTTL: 15 * time.Minute, RefreshTTL: time.Hour,
+		OnShopLink: func(context.Context, string, string, string) error { return nil },
 	}, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	if err != nil {
 		t.Fatal(err)
@@ -157,13 +160,13 @@ func authorizeQuery(challenge string, extra map[string]string) string {
 // code runs authorize → login (which answers with the code) and returns the code (or fails).
 func (e *env) code(email, pw, challenge string, extra map[string]string) string {
 	e.t.Helper()
-	res := e.get("/oidc/authorize?" + authorizeQuery(challenge, extra))
+	res := e.get("/oidc/platform/authorize?" + authorizeQuery(challenge, extra))
 	if res.StatusCode != 302 {
 		e.t.Fatalf("authorize: %d %s", res.StatusCode, body(res))
 	}
 	loc, _ := url.Parse(res.Header.Get("Location"))
 	id := loc.Query().Get("id")
-	res = e.post("/login", url.Values{"id": {id}, "email": {email}, "password": {pw}})
+	res = e.post("/oidc/platform/login", url.Values{"id": {id}, "email": {email}, "password": {pw}})
 	if res.StatusCode != 302 {
 		e.t.Fatalf("login: %d %s", res.StatusCode, body(res))
 	}
@@ -182,7 +185,7 @@ type tokens struct {
 }
 
 func (e *env) exchange(code, verifier string) (int, tokens) {
-	res := e.post("/oidc/oauth/token", url.Values{"grant_type": {"authorization_code"}, "code": {code},
+	res := e.post("/oidc/platform/oauth/token", url.Values{"grant_type": {"authorization_code"}, "code": {code},
 		"redirect_uri": {redirect}, "client_id": {"platform-cli"}, "code_verifier": {verifier}})
 	var t tokens
 	_ = json.NewDecoder(res.Body).Decode(&t)
@@ -224,12 +227,12 @@ func TestCodeFlowTokenChecks(t *testing.T) {
 	}
 
 	// Tokens signed with the live key but wrong claims, and tokens signed otherwise.
-	k, err := e.iss.keys.signing(context.Background())
+	k, err := e.iss.keys.signing(context.Background(), "platform")
 	if err != nil {
 		t.Fatal(err)
 	}
 	now := time.Now().Unix()
-	good := map[string]any{"iss": e.iss.cfg.Issuer, "sub": sub, "aud": []string{"platform-api"}, "exp": now + 60,
+	good := map[string]any{"iss": e.iss.issuerFor("platform"), "sub": sub, "aud": []string{"platform-api"}, "exp": now + 60,
 		"iat": now, "client_id": "platform-cli", "token_use": "access"}
 	with := func(kv ...any) map[string]any {
 		c := map[string]any{}
@@ -297,7 +300,7 @@ func TestAuthorizeRejects(t *testing.T) {
 		"loopback, extra query":   {"redirect_uri": "http://127.0.0.1/callback?x=1"},
 		"localhost name, ok port": {"redirect_uri": "http://localhost.evil.example/callback"},
 	} {
-		res := e.get("/oidc/authorize?" + authorizeQuery(c, extra))
+		res := e.get("/oidc/platform/authorize?" + authorizeQuery(c, extra))
 		loc := res.Header.Get("Location")
 		switch {
 		case res.StatusCode == 302 && (strings.HasPrefix(loc, redirect+"?") || strings.HasPrefix(loc, redirect+"#")) && strings.Contains(loc, "error="):
@@ -306,12 +309,12 @@ func TestAuthorizeRejects(t *testing.T) {
 		default:
 			t.Errorf("%s: %d Location=%q", name, res.StatusCode, loc)
 		}
-		if strings.Contains(loc, "evil") || strings.Contains(loc, "/login") {
+		if strings.Contains(loc, "evil") || strings.Contains(loc, "/oidc/platform/login") {
 			t.Errorf("%s: redirected to %q", name, loc)
 		}
 	}
 	// RFC 8252: a loopback redirect with another port is the same client.
-	res := e.get("/oidc/authorize?" + authorizeQuery(c, map[string]string{"redirect_uri": "http://127.0.0.1:43123/callback"}))
+	res := e.get("/oidc/platform/authorize?" + authorizeQuery(c, map[string]string{"redirect_uri": "http://127.0.0.1:43123/callback"}))
 	if res.StatusCode != 302 || !strings.Contains(res.Header.Get("Location"), "/login?id=") {
 		t.Errorf("loopback any-port: %d %s", res.StatusCode, res.Header.Get("Location"))
 	}
@@ -319,7 +322,7 @@ func TestAuthorizeRejects(t *testing.T) {
 	// port may vary; it also ignores the host): any loopback host works. Pinned, not a hole:
 	// the code still goes to the user's own machine, where any port was already allowed.
 	for _, ru := range []string{"http://127.0.0.2/callback", "http://localhost/callback", "http://[::1]:8080/callback"} {
-		res := e.get("/oidc/authorize?" + authorizeQuery(c, map[string]string{"redirect_uri": ru}))
+		res := e.get("/oidc/platform/authorize?" + authorizeQuery(c, map[string]string{"redirect_uri": ru}))
 		if res.StatusCode != 302 || !strings.Contains(res.Header.Get("Location"), "/login?id=") {
 			t.Errorf("loopback variant %s: %d", ru, res.StatusCode)
 		}
@@ -327,9 +330,9 @@ func TestAuthorizeRejects(t *testing.T) {
 	// Encoded and odd paths never reach /authorize unchecked (there is no gate of ours to
 	// bypass). ServeMux answers unclean paths with a 301 to the clean one on our own host.
 	q := authorizeQuery(c, map[string]string{"client_id": "evil", "redirect_uri": "https://evil.example/cb", "response_type": "token"})
-	for _, p := range []string{"/oidc/%61uthorize", "/oidc/AUTHORIZE", "/oidc//authorize", "/oidc/./authorize", "/oidc/x/../authorize", "/%6Fidc/authorize"} {
+	for _, p := range []string{"/oidc/platform/%61uthorize", "/oidc/platform/AUTHORIZE", "/oidc/platform//authorize", "/oidc/platform/./authorize", "/oidc/platform/x/../authorize", "/%6Fidc/authorize"} {
 		res := e.get(p + "?" + q)
-		if u, _ := url.Parse(res.Header.Get("Location")); u != nil && (u.Host != "" || strings.HasPrefix(u.Path, "/login")) {
+		if u, _ := url.Parse(res.Header.Get("Location")); u != nil && (u.Host != "" || strings.HasPrefix(u.Path, "/oidc/platform/login")) {
 			t.Errorf("%s: redirected to %s", p, res.Header.Get("Location"))
 		}
 	}
@@ -337,7 +340,7 @@ func TestAuthorizeRejects(t *testing.T) {
 
 func TestIssuerPinned(t *testing.T) {
 	e := newEnv(t)
-	req, _ := http.NewRequest("GET", e.srv.URL+"/oidc/.well-known/openid-configuration", nil)
+	req, _ := http.NewRequest("GET", e.srv.URL+"/oidc/platform/.well-known/openid-configuration", nil)
 	req.Host = "evil.example"
 	req.Header.Set("X-Forwarded-Host", "evil.example")
 	req.Header.Set("Forwarded", "host=evil.example;proto=https")
@@ -350,7 +353,7 @@ func TestIssuerPinned(t *testing.T) {
 		TokenEndpoint string `json:"token_endpoint"`
 	}
 	_ = json.NewDecoder(res.Body).Decode(&d)
-	if res.StatusCode != 200 || d.Issuer != e.iss.cfg.Issuer || strings.Contains(d.TokenEndpoint, "evil") {
+	if res.StatusCode != 200 || d.Issuer != e.iss.issuerFor("platform") || strings.Contains(d.TokenEndpoint, "evil") {
 		t.Fatalf("discovery follows headers: %+v", d)
 	}
 }
@@ -401,14 +404,14 @@ func TestCodeOnlyToTheLogin(t *testing.T) {
 	email := uniq("cb")
 	e.user(email, "pw")
 	_, c := pkce()
-	res := e.get("/oidc/authorize?" + authorizeQuery(c, nil))
+	res := e.get("/oidc/platform/authorize?" + authorizeQuery(c, nil))
 	loc, _ := url.Parse(res.Header.Get("Location"))
 	id := loc.Query().Get("id")
-	res = e.post("/login", url.Values{"id": {id}, "email": {email}, "password": {"pw"}})
+	res = e.post("/oidc/platform/login", url.Values{"id": {id}, "email": {email}, "password": {"pw"}})
 	if res.StatusCode != 302 || !strings.Contains(res.Header.Get("Location"), "code=") {
 		t.Fatalf("login: %d %s", res.StatusCode, res.Header.Get("Location"))
 	}
-	for _, p := range []string{"/oidc/authorize/callback?id=", "/oidc/authorize/%63allback?id="} {
+	for _, p := range []string{"/oidc/platform/authorize/callback?id=", "/oidc/platform/authorize/%63allback?id="} {
 		if cb := e.get(p + url.QueryEscape(id)); cb.StatusCode != 404 {
 			t.Fatalf("%s: %d %s", p, cb.StatusCode, cb.Header.Get("Location"))
 		}
@@ -416,7 +419,7 @@ func TestCodeOnlyToTheLogin(t *testing.T) {
 	if err := e.iss.SaveAuthCode(context.Background(), id, "second"); err == nil {
 		t.Fatal("a second code was saved for one request")
 	}
-	if res := e.post("/login", url.Values{"id": {id}, "email": {email}, "password": {"pw"}}); res.StatusCode == 302 {
+	if res := e.post("/oidc/platform/login", url.Values{"id": {id}, "email": {email}, "password": {"pw"}}); res.StatusCode == 302 {
 		t.Fatal("login replayed")
 	}
 }
@@ -427,7 +430,7 @@ func TestParallelGuessesCapped(t *testing.T) {
 	email := uniq("par")
 	e.user(email, "right")
 	_, c := pkce()
-	res := e.get("/oidc/authorize?" + authorizeQuery(c, nil))
+	res := e.get("/oidc/platform/authorize?" + authorizeQuery(c, nil))
 	loc, _ := url.Parse(res.Header.Get("Location"))
 	id := loc.Query().Get("id")
 	var wg sync.WaitGroup
@@ -437,7 +440,7 @@ func TestParallelGuessesCapped(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			st := e.post("/login", url.Values{"id": {id}, "email": {email}, "password": {"wrong"}}).StatusCode
+			st := e.post("/oidc/platform/login", url.Values{"id": {id}, "email": {email}, "password": {"wrong"}}).StatusCode
 			mu.Lock()
 			counts[st]++
 			mu.Unlock()
@@ -466,11 +469,11 @@ func TestLoginFailuresAndLimits(t *testing.T) {
 	email := uniq("lim")
 	e.user(email, "right")
 	_, c := pkce()
-	res := e.get("/oidc/authorize?" + authorizeQuery(c, nil))
+	res := e.get("/oidc/platform/authorize?" + authorizeQuery(c, nil))
 	loc, _ := url.Parse(res.Header.Get("Location"))
 	id := loc.Query().Get("id")
 	try := func(em, pw string) int {
-		return e.post("/login", url.Values{"id": {id}, "email": {em}, "password": {pw}}).StatusCode
+		return e.post("/oidc/platform/login", url.Values{"id": {id}, "email": {em}, "password": {pw}}).StatusCode
 	}
 	if st := try(uniq("nobody"), "x"); st != 401 {
 		t.Fatalf("unknown email: %d", st)
@@ -491,7 +494,7 @@ func TestLoginTimingUnknownVsWrong(t *testing.T) {
 	e.user(email, "right")
 	measure := func(em string) time.Duration {
 		start := time.Now()
-		e.iss.authenticate(context.Background(), em, "wrong")
+		e.iss.authenticate(context.Background(), "platform", "default", em, "wrong")
 		return time.Since(start)
 	}
 	var known, unknown time.Duration
@@ -505,7 +508,7 @@ func TestLoginTimingUnknownVsWrong(t *testing.T) {
 }
 
 func clientToken(e *env, id, secret string) (int, tokens) {
-	res := e.post("/oidc/oauth/token", url.Values{"grant_type": {"client_credentials"}}, id, secret)
+	res := e.post("/oidc/platform/oauth/token", url.Values{"grant_type": {"client_credentials"}}, id, secret)
 	var t tokens
 	_ = json.NewDecoder(res.Body).Decode(&t)
 	return res.StatusCode, t
@@ -546,7 +549,7 @@ func TestMachineClientsInTx(t *testing.T) {
 		t.Fatalf("verify client token: %v %+v", err, got)
 	}
 	// A machine client can't use the user flows.
-	if res := e.post("/oidc/oauth/token", url.Values{"grant_type": {"refresh_token"}, "refresh_token": {"x"}}, c.ClientID, c.ClientSecret); res.StatusCode == 200 {
+	if res := e.post("/oidc/platform/oauth/token", url.Values{"grant_type": {"refresh_token"}, "refresh_token": {"x"}}, c.ClientID, c.ClientSecret); res.StatusCode == 200 {
 		t.Fatal("machine client refresh grant")
 	}
 
@@ -558,7 +561,7 @@ func TestMachineClientsInTx(t *testing.T) {
 		}
 		return errors.New("rollback")
 	})
-	if _, ok := e.iss.authenticate(ctx, email, "pw"); ok {
+	if _, ok := e.iss.authenticate(ctx, "platform", "default", email, "pw"); ok {
 		t.Fatal("rolled-back user can log in")
 	}
 
@@ -591,7 +594,7 @@ func TestRefreshRotationAndReuse(t *testing.T) {
 		t.Fatal("no refresh token with offline_access")
 	}
 	refresh := func(rt string) (int, tokens) {
-		res := e.post("/oidc/oauth/token", url.Values{"grant_type": {"refresh_token"}, "refresh_token": {rt}, "client_id": {"platform-cli"}})
+		res := e.post("/oidc/platform/oauth/token", url.Values{"grant_type": {"refresh_token"}, "refresh_token": {rt}, "client_id": {"platform-cli"}})
 		var t tokens
 		_ = json.NewDecoder(res.Body).Decode(&t)
 		return res.StatusCode, t
@@ -612,7 +615,7 @@ func TestRefreshRotationAndReuse(t *testing.T) {
 	}
 	// /revoke kills a fresh family.
 	tok2 := e.login(email, "pw", map[string]string{"scope": "openid offline_access"})
-	res := e.post("/oidc/revoke", url.Values{"token": {tok2.RefreshToken}, "client_id": {"platform-cli"}})
+	res := e.post("/oidc/platform/revoke", url.Values{"token": {tok2.RefreshToken}, "client_id": {"platform-cli"}})
 	if res.StatusCode != 200 {
 		t.Fatalf("revoke: %d %s", res.StatusCode, body(res))
 	}
@@ -631,7 +634,7 @@ func TestRefreshRotationAndReuse(t *testing.T) {
 // the other without a restart; a retired key stops verifying everywhere.
 func TestTwoInstancesAndRotation(t *testing.T) {
 	a := newEnv(t)
-	b := startIssuer(t, a.pool, a.iss.cfg.Issuer) // two instances behind one public name
+	b := startIssuer(t, a.pool, a.iss.cfg.PublicURL) // two instances behind one public name
 	ctx := context.Background()
 	email := uniq("multi")
 	a.user(email, "pw")
@@ -646,10 +649,10 @@ func TestTwoInstancesAndRotation(t *testing.T) {
 	}
 
 	// Rotate (sign at once), then B signs with the new key: A has never seen it.
-	if err := Rotate(ctx, a.pool, a.iss.cfg.Secret, 0, time.Hour); err != nil {
+	if err := Rotate(ctx, a.pool, a.iss.cfg.Secret, "platform", 0, time.Hour); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := b.iss.keys.live(ctx, true); err != nil { // B's next scheduled reload
+	if _, err := b.iss.keys.live(ctx, "platform", true); err != nil { // B's next scheduled reload
 		t.Fatal(err)
 	}
 	newTok := b.login(email, "pw", nil)
@@ -665,7 +668,7 @@ func TestTwoInstancesAndRotation(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, inst := range []*env{a, b} {
-		if _, err := inst.iss.keys.live(ctx, true); err != nil {
+		if _, err := inst.iss.keys.live(ctx, "platform", true); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := inst.iss.Verify(ctx, tok.AccessToken); err == nil {
@@ -689,11 +692,11 @@ func TestKeysEncryptedAtRest(t *testing.T) {
 		t.Fatal("key not encrypted")
 	}
 	wrong, _ := newKeyRing(e.pool, "another-secret-0123456789abcdef-0123")
-	if _, err := wrong.live(context.Background(), true); err == nil {
+	if _, err := wrong.live(context.Background(), "platform", true); err == nil {
 		t.Fatal("keys decrypt with another secret")
 	}
 	// An instance with the wrong secret refuses to start (instead of failing every token).
-	if _, err := New(context.Background(), e.pool, Config{Issuer: "http://x/oidc", Secret: "another-secret-0123456789abcdef-0123"},
+	if _, err := New(context.Background(), e.pool, Config{PublicURL: "http://x", Secret: "another-secret-0123456789abcdef-0123"},
 		slog.New(slog.NewTextHandler(io.Discard, nil))); err == nil {
 		t.Fatal("started with a secret that can't decrypt the keys")
 	}
@@ -719,7 +722,7 @@ func TestAllKeysRetired(t *testing.T) {
 	if _, err := e.pool.Exec(ctx, `UPDATE idp_signing_keys SET retire_at=now() WHERE retire_at IS NULL OR retire_at > now()`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := e.iss.keys.live(ctx, true); err != nil {
+	if _, err := e.iss.keys.live(ctx, "platform", true); err != nil {
 		t.Fatal(err)
 	}
 	tok := e.login(email, "pw", nil)
