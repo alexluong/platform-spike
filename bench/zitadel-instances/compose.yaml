@@ -44,16 +44,26 @@ services:
       ZITADEL_FIRSTINSTANCE_ORG_MACHINE_MACHINE_NAME: zbench-admin
       ZITADEL_FIRSTINSTANCE_ORG_MACHINE_PAT_EXPIRATIONDATE: "2099-01-01T00:00:00Z"
       ZITADEL_DEFAULTINSTANCE_FEATURES_LOGINV2_REQUIRED: "true"
-      # System API user (JWT profile, RS256); public key from ./up.sh.
-      ZITADEL_SYSTEMAPIUSERS: '{"zbench":{"KeyData":"${ZBENCH_SYSTEM_KEY:?run ./up.sh}"}}'
+      # System API users (JWT profile, RS256; one key pair from ./up.sh): zbench = SYSTEM_OWNER
+      # (create/delete instances); zlogin = IAM_LOGIN_CLIENT on every instance (what a shared
+      # Login UI v2 uses: SYSTEM_USER_ID/SYSTEM_USER_PRIVATE_KEY/AUDIENCE).
+      ZITADEL_SYSTEMAPIUSERS: '{"zbench":{"KeyData":"${ZBENCH_SYSTEM_KEY:?run ./up.sh}"},"zlogin":{"KeyData":"${ZBENCH_SYSTEM_KEY}","Memberships":[{"MemberType":"System","Roles":["IAM_LOGIN_CLIENT"]}]}}'
       # Bench knobs (defaults = Zitadel defaults).
       ZITADEL_PROJECTIONS_HANDLEACTIVEINSTANCES: ${ZBENCH_HANDLEACTIVEINSTANCES:-0s}
       ZITADEL_PROJECTIONS_MAXACTIVEINSTANCES: ${ZBENCH_MAXACTIVEINSTANCES:-0}
       ZITADEL_CACHES_CONNECTORS_MEMORY_ENABLED: ${ZBENCH_MEMCACHE:-false}
       ZITADEL_CACHES_INSTANCE_CONNECTOR: ${ZBENCH_INSTANCECACHE:-}
+      # Outbound HTTP deny list (IdP backchannel, actions targets). Default = Zitadel's default,
+      # which blocks private ranges, so federation between instances on this deployment fails
+      # until the docker network (192.168.x) is allowed: ZBENCH_DENYLIST without 192.168.0.0/16.
+      ZITADEL_HTTPCLIENT_DENYLIST: ${ZBENCH_DENYLIST:-localhost,0.0.0.0/8,10.0.0.0/8,100.64.0.0/10,127.0.0.0/8,169.254.0.0/16,172.16.0.0/12,192.168.0.0/16,198.18.0.0/15,::/128,::1/128,fc00::/7,fe80::/10}
     ports: ["8099:8080"]
     volumes: [zb-bootstrap:/zitadel/bootstrap]
-    networks: [zb-net]
+    networks:
+      zb-net:
+        # Internal names other instances' servers use to reach an instance on this deployment
+        # (federation probe: the Shop/platform instance owns domain shop.idp.internal).
+        aliases: [shop.idp.internal]
     mem_limit: ${ZBENCH_ZITADEL_MEM:-2g}
     depends_on:
       zb-postgres: {condition: service_healthy}

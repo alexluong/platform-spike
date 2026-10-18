@@ -14,19 +14,21 @@ export const PASSWORD = 'Password1!-zbench'
 
 const b64u = (b: Buffer | string) => Buffer.from(b).toString('base64url')
 let sysKey: string | undefined
-let sysTok: { jwt: string; exp: number } | undefined
+const sysToks: Record<string, { jwt: string; exp: number }> = {}
 
-/** JWT-profile bearer for the System API: iss = sub = the SystemAPIUsers key name, signed RS256. */
-export function systemToken(): string {
+/** JWT-profile bearer for a System API user: iss = sub = the SystemAPIUsers key name, signed RS256.
+ *  zbench = SYSTEM_OWNER; zlogin = IAM_LOGIN_CLIENT on all instances (compose.yaml). */
+export function systemToken(user = 'zbench'): string {
   const now = Math.floor(Date.now() / 1000)
-  if (sysTok && sysTok.exp - 60 > now) return sysTok.jwt
+  const cached = sysToks[user]
+  if (cached && cached.exp - 60 > now) return cached.jwt
   sysKey ??= readFileSync(join(here, '.keys/system.pem'), 'utf8')
   const head = b64u(JSON.stringify({ alg: 'RS256', typ: 'JWT' }))
   const exp = now + 3600
-  const body = b64u(JSON.stringify({ iss: 'zbench', sub: 'zbench', aud: AUD, iat: now, exp }))
+  const body = b64u(JSON.stringify({ iss: user, sub: user, aud: AUD, iat: now, exp }))
   const sig = createSign('RSA-SHA256').update(`${head}.${body}`).sign(sysKey)
-  sysTok = { jwt: `${head}.${body}.${b64u(sig)}`, exp }
-  return sysTok.jwt
+  sysToks[user] = { jwt: `${head}.${body}.${b64u(sig)}`, exp }
+  return sysToks[user].jwt
 }
 
 export interface Res<T = any> {
@@ -193,16 +195,12 @@ export interface LoginCfg {
 
 /**
  * Per-instance login setup through the instance header only: project, PKCE OIDC app (JWT access
- * tokens), one human user with a pre-verified email and a password. Uses the owner PAT.
+ * tokens), one human user with a pre-verified email and a password. Uses the owner PAT (IAM_OWNER).
  */
 export async function provisionLogin(inst: Instance, email = 'user@example.com', pub?: string): Promise<LoginCfg & { ms: number }> {
   const t0 = performance.now()
   const o = { token: inst.pat, instance: inst.domain, pub }
   const org = await eventually('orgs/me', () => z('/management/v1/orgs/me', o))
-  // Finalizing auth requests needs IAM_LOGIN_CLIENT (IAM_OWNER alone gets 403 AUTH-AWfge);
-  // the owner machine takes both roles here, standing in for Login UI v2's service user.
-  const me = await ok('users/me', z('/auth/v1/users/me', o))
-  await ok('iam member', z(`/admin/v1/members/${me.json.user.id}`, { ...o, method: 'PUT', json: { roles: ['IAM_OWNER', 'IAM_LOGIN_CLIENT'] } }))
   const p = await ok('project', z('/management/v1/projects', { ...o, json: { name: 'app' } }))
   const app = await ok(
     'oidc app',
@@ -257,11 +255,13 @@ export interface LoginResult {
  * Headless OIDC code + PKCE login, as Login UI v2 does it (stack a's driver): authorize →
  * Session API (user + password checks) → finalize the auth request → token. All through the
  * instance header; `pub` sets x-zitadel-public-host. `loginToken` = a token allowed to use the
- * Session/OIDC services (owner PAT here; Login UI v2 uses an IAM_LOGIN_CLIENT PAT).
+ * Session/OIDC services (IAM_LOGIN_CLIENT).
  */
 export async function login(inst: Instance, cfg: LoginCfg, opts: { pub?: string; loginToken?: string; password?: string } = {}): Promise<LoginResult> {
   const o = { instance: inst.domain, pub: opts.pub }
-  const tok = opts.loginToken ?? inst.pat
+  // Default: the zlogin System API user (IAM_LOGIN_CLIENT on every instance), like one shared
+  // Login UI v2. The instance owner PAT gets 403 AUTH-AWfge on finalize (IAM_OWNER lacks it).
+  const tok = opts.loginToken ?? systemToken('zlogin')
   const { verifier, challenge, state } = pkce()
   const q = new URLSearchParams({
     client_id: cfg.clientId,

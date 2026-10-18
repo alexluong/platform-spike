@@ -1,0 +1,25 @@
+# probe-users 2026-10-18T19:46:34.475Z
+POST /v2/users/new (human, email.isVerified=true, no password): 200 id=395702041307017219
+GET /v2/users/{id}: state=USER_STATE_ACTIVE email.isVerified=true passwordChanged=-
+POST /v2/users/{id}/invite_code {returnCode:{}}: 200 {"details":{"sequence":"3", "changeDate":"2026-10-18T19:46:36.350577Z", "resourceOwner":"395702038824054787"}, "inviteCode":"OWXRM7"}
+POST /v2/users/{id}/password_reset {returnCode:{}}: 200 verificationCode=<6 chars>
+POST /v2/users/{id}/password {newPassword, verificationCode} (zlogin token): 200 {"details":{"sequence":"5", "changeDate":"2026-10-18T19:46:36.464222Z", "resourceOwner":"395702038824054787"}}
+POST /v2/sessions (user + new password): 201 session 395702042263318531
+reuse the same code: 400 {"code":9, "message":"Code not found (COMMAND-2M9fs)", "details":[{"@type":"type.googleapis.com/zitadel.v1.ErrorDetail",…
+
+POST /v2/users/{id}/passkeys/registration_link {returnCode:{}}: 200 code.id=395702042397536259 code.code=<12 chars>
+POST /v2/users/{id}/passkeys {code, domain: pu-mve8krcb.idp.internal}: 200 passkeyId=395702042447867907 rp.id=pu-mve8krcb.idp.internal
+POST /v2/users/{id}/passkeys/{passkeyId} (verify attestation, origin http://pu-mve8krcb.idp.internal): 200 {"details":{"sequence":"10", "changeDate":"2026-10-18T19:46:36.815513Z", "resourceOwner":"395702038824054787"}}
+passkey login (rpId pu-mve8krcb.idp.internal): session update 200; factors=user,webAuthN webAuthN.userVerified=true
+
+POST /v2/users/{id}/passkeys/registration_link {returnCode:{}}: 200 code.id=395702042699526147 code.code=<12 chars>
+POST /v2/users/{id}/passkeys {code, domain: store-mve8krcb.brand.test}: 200 passkeyId=395702042766635011 rp.id=store-mve8krcb.brand.test
+POST /v2/users/{id}/passkeys/{passkeyId} (verify attestation, origin http://store-mve8krcb.brand.test): 200 {"details":{"sequence":"14", "changeDate":"2026-10-18T19:46:37.000308Z", "resourceOwner":"395702038824054787"}}
+passkey login (rpId store-mve8krcb.brand.test): session update 200; factors=user,webAuthN webAuthN.userVerified=true
+
+POST /v2/users/{id}/passkeys/registration_link {returnCode:{}}: 200 code.id=395702043018293251 code.code=<12 chars>
+POST /v2/users/{id}/passkeys {code, domain: unregistered-mve8krcb.brand.test}: 200 passkeyId=395702043051847683 rp.id=unregistered-mve8krcb.brand.test
+POST /v2/users/{id}/passkeys/{passkeyId} (verify attestation, origin http://unregistered-mve8krcb.brand.test): 200 {"details":{"sequence":"18", "changeDate":"2026-10-18T19:46:37.159481Z", "resourceOwner":"395702038824054787"}}
+passkey login (rpId unregistered-mve8krcb.brand.test): session update 200; factors=user,webAuthN webAuthN.userVerified=true
+
+done
