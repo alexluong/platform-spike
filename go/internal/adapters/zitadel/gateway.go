@@ -337,7 +337,7 @@ func (x *Instances) finishShop(ctx context.Context, p *Pool, authRequestID, inte
 		if err == nil {
 			break
 		}
-		if !IsNotFound(err) || attempt >= 20 {
+		if !IsNotFound(err) || attempt >= 60 {
 			return "", 401, err
 		}
 		time.Sleep(150 * time.Millisecond)
