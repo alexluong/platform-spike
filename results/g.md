@@ -1,5 +1,7 @@
 # Stack g results: TypeScript (Hono) + OpenAuth + Cerbos + Postgres
 
+> Reviewed: `results/review-g.md` (one high finding, the `/authorize` gate bypass, fixed; 362/362 after the fixes).
+
 Stack c with Better Auth swapped for OpenAuth (`@openauthjs/openauth` 0.4.3, pinned). Same app image, same modules, same Cerbos policies; `IDENTITY=openauth` picks the adapter at the composition root. Run on 2026-10-18 against `ps-g` on cs-ws (`docker compose -p ps-g --profile g up -d --build`), app on 8093.
 
 ## Conformance
@@ -74,7 +76,7 @@ A separate service is not needed. It would make sense only to share one issuer b
   - The issuer caches them per process (`lazy()`), and `createClient` caches the JWKS per process with no refetch on an unknown `kid`.
   - Rotating means setting `expired` on the stored key and restarting every instance (issuer and verifiers).
   - Keys survive restarts (they're in Postgres; a token from before a restart still works).
-  - Multi-instance cold start is racy. Each instance may create its own key (#322 on KV); harmless, since all are published. The adapter generates keys at boot so the first login burst doesn't race.
+  - Multi-instance cold start was racy, and not harmless: each instance caches its own key list, so one could reject the other's tokens and cookies until restart. Fixed in review: keys are created at boot under a Postgres advisory lock (review-g #3).
 
 ### Sessions and revocation
 
