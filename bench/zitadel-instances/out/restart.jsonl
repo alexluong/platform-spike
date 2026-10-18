@@ -1,0 +1,1 @@
+{"label":"smoke","at":"2026-10-18T19:55:05.670Z","instances":20,"restartS":1.5,"readyS":6.6,"firstLoginS":7.9,"cpuSettledS":22.3,"cpuThresholdPct":15,"cpuTrace":[1,0.5,0.8],"memAfter":"79.9MiB","load":"46.87 40.64 39.55","pcBench":4}
