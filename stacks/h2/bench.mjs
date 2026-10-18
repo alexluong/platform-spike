@@ -2,6 +2,7 @@
 //   node stacks/h2/bench.mjs provision <n> [concurrency]   create n merchants, time each create
 //   node stacks/h2/bench.mjs warm [limit]                  each merchant: a tenant customer + one login
 //   node stacks/h2/bench.mjs logins <k>                    k sequential logins per pool kind, p50/p95
+//   node stacks/h2/bench.mjs probe                         live checks: closed callback, spoofed headers, per-pool lockout, timing
 // APP_URL (default http://cs-ws.lab.alexluong.com:8098), TEST_SECRET (default test-secret).
 import { createHash, randomBytes } from 'node:crypto'
 
@@ -127,8 +128,54 @@ async function logins(k) {
   console.log(JSON.stringify(out, null, 1))
 }
 
+async function loginStatus(issuer, clientId, email, password) {
+  const a = await authorize(issuer, clientId)
+  const t = performance.now()
+  const r = await form(onApp(`${issuer}/login`), { id: a.id, email, password })
+  return { status: r.status, ms: performance.now() - t, id: a.id }
+}
+
+async function probe() {
+  const a = await admin()
+  const mk = async () => json('POST', '/api/platform/merchants', { name: 'probe', ownerUserId: (await testUser('user')).id }, a.token)
+  const [m1, m2] = [await mk(), await mk()]
+  const [i1, i2] = [await issuerOf(m1.id), await issuerOf(m2.id)]
+  const email = uniq('probe')
+  for (const m of [m1, m2]) await json('POST', `/api/_test/merchants/${m.id}/users`, { email, password: `Pw-${m.id}` , kind: 'customer' }, null, { 'x-test-secret': secret })
+  const out = {}
+  // the library's callback stays closed in every pool
+  const pending = await authorize(i1, 'storefront')
+  out.callbackClosed = (await get(onApp(`${i1}/authorize/callback?id=${pending.id}`))).status
+  // pool-selecting and host headers are ignored: discovery keeps its issuer, a token keeps its principal
+  const disc = await (await get(onApp(`${i1}/.well-known/openid-configuration`), { host: 'evil.example', 'x-forwarded-host': 'evil.example',
+    'x-zitadel-instance-host': new URL(i2).host, 'x-zitadel-public-host': 'evil.example', forwarded: 'host=evil.example' })).json()
+  out.discoveryIssuerPinned = disc.issuer === i1
+  const t1 = await pwLogin(i1, 'storefront', email, `Pw-${m1.id}`)
+  const me1 = await json('GET', '/api/me', null, t1)
+  const meSpoof = await json('GET', '/api/me', null, t1, { 'x-zitadel-instance-host': new URL(i2).host, 'x-pool': 'shop', host: 'evil.example' })
+  out.headersIgnoredOnApi = me1.id === meSpoof.id
+  // lockout is per pool: 10 bad passwords at M1 lock that email at M1 only
+  const bad = []
+  for (let i = 0; i < 11; i++) bad.push((await loginStatus(i1, 'storefront', email, 'wrong')).status)
+  out.lockoutM1 = bad.join(',')
+  out.rightPasswordAtM1WhileLocked = (await loginStatus(i1, 'storefront', email, `Pw-${m1.id}`)).status
+  out.sameEmailAtM2 = (await loginStatus(i2, 'storefront', email, `Pw-${m2.id}`)).status
+  // timing: unknown email vs wrong password at a tenant pool (fresh emails, under the lockout cap)
+  const unknown = [], wrong = []
+  const e2 = uniq('timing')
+  await json('POST', `/api/_test/merchants/${m2.id}/users`, { email: e2, password: 'Pw-timing-1', kind: 'customer' }, null, { 'x-test-secret': secret })
+  for (let i = 0; i < 8; i++) {
+    unknown.push((await loginStatus(i2, 'storefront', uniq('nobody'), 'x')).ms)
+    wrong.push((await loginStatus(i2, 'storefront', e2, 'wrong')).ms)
+  }
+  out.timingUnknown = stats(unknown)
+  out.timingWrong = stats(wrong)
+  console.log(JSON.stringify(out, null, 1))
+}
+
 const [cmd, x, y] = process.argv.slice(2)
 if (cmd === 'provision') await provision(Number(x ?? 100), Number(y ?? 1))
 else if (cmd === 'warm') await warm(Number(x ?? 1e9))
 else if (cmd === 'logins') await logins(Number(x ?? 30))
+else if (cmd === 'probe') await probe()
 else console.error('usage: provision <n> [conc] | warm [limit] | logins <k>')
