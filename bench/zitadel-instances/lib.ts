@@ -67,14 +67,25 @@ export async function z<T = any>(path: string, o: Opts = {}): Promise<Res<T>> {
     body = new URLSearchParams(o.form).toString()
   }
   h.set('accept', 'application/json')
-  const t0 = performance.now()
-  const r = await fetch((o.base ?? BASE) + path, {
-    method: o.method ?? (body ? 'POST' : 'GET'),
-    headers: h,
-    body,
-    redirect: o.redirect ?? 'manual',
-    signal: AbortSignal.timeout(60_000),
-  })
+  let t0 = performance.now()
+  let r: Response
+  for (let attempt = 0; ; attempt++) {
+    t0 = performance.now()
+    try {
+      r = await fetch((o.base ?? BASE) + path, {
+        method: o.method ?? (body ? 'POST' : 'GET'),
+        headers: h,
+        body,
+        redirect: o.redirect ?? 'manual',
+        signal: AbortSignal.timeout(60_000),
+      })
+      break
+    } catch (e) {
+      // Keep-alive resets (ECONNRESET) on a reused socket: retry; a real outage still throws.
+      if (attempt >= 3) throw e
+      await sleep(200)
+    }
+  }
   const text = await r.text()
   const ms = performance.now() - t0
   let json: any

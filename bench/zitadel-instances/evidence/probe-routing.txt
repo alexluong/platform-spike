@@ -1,0 +1,50 @@
+# probe-routing 2026-10-18T19:42:37.138Z base=http://cs-ws.lab.alexluong.com:8099
+instances: A=395701640683876355 (pa-mve8fo7m.idp.internal, create 563ms)  B=395701641556291587 (pb-mve8fo7m.idp.internal, create 899ms)
+provisioned login (project, app, user, IAM_LOGIN_CLIENT) via header only: A 415ms, B 252ms
+
+## 1. Does every API honour x-zitadel-instance-host?
+discovery, no header (Host=default): issuer=http://cs-ws.lab.alexluong.com:8099
+discovery, header A:                 200 issuer=http://pa-mve8fo7m.idp.internal jwks_uri=http://pa-mve8fo7m.idp.internal/oauth/v2/keys
+JWKS header A: 200 kids=[395701640717692931,395701640851648515]  header B: kids=[395701641841504259,395701642227380227]  default: kids=[395701182011568131,395701182330335235]
+Management v1 GET /management/v1/orgs/me (A PAT, header A): 200 org=395701640683941891 name=staff (A org 395701640683941891)
+Admin v1 POST /admin/v1/orgs/_search (header A): 200 orgs=staff
+User v2 GET /v2/users/{id} (header A): 200 user=user@example.com
+User v2 over Connect POST /zitadel.user.v2.UserService/GetUserByID (header A): 200 user=user@example.com
+OIDC authorize → Session v2 → OIDC v2 finalize → token (header A): ok, iss=http://pa-mve8fo7m.idp.internal sub=395701643670220803 ms={"authorize":86,"session":87,"finalize":37,"token":31,"total":242}
+userinfo (header A, A token): 200 sub=395701643670220803 email=user@example.com
+userinfo (header B, A token): 401 {"error":"access_denied","error_description":"access token invalid"}
+
+Management (header B, A PAT): 401 {"code":16, "message":"Errors.Token.Invalid (AUTH-7fs1e)", "details":[{"@type":"type.googleapis.com/zitadel.v1.ErrorDetail", "id":"AUTH-7fs1e", "message":"Error…
+Management (no header = default instance, A PAT): 401 {"code":16, "message":"Errors.Token.Invalid (AUTH-7fs1e)", "details":[{"@type":"type.googleapis.com/zitadel.v1.ErrorDetail", "id":"AUTH-7fs1e", "message":"Error…
+System API with header B (aud = default issuer): 200 {"details":{}}
+Console environment.json (header A): 200 {"api":"http://cs-ws.lab.alexluong.com:8099","issuer":"http://pa-mve8fo7m.idp.internal","clientid":"395701640717627395"}
+Login v1 /ui/login/login (header A): 302 location=/ui/console/
+
+### Host header vs instance header (curl, Host set explicitly)
+Host=pa-mve8fo7m.idp.internal, no header:                 "issuer":"http://pa-mve8fo7m.idp.internal"
+Host=unknown.example, header A:              "issuer":"http://pa-mve8fo7m.idp.internal"
+Host=pa-mve8fo7m.idp.internal, header B (header wins?):   "issuer":"http://pb-mve8fo7m.idp.internal"
+Host=default, header unknown (fallback?):    HTTP 404
+header A with :8099 port:                    "issuer":"http://pa-mve8fo7m.idp.internal:8099"
+header A upper-case:                         Instance not found
+generated domain (pa-mve8fo7m-*.<ExternalDomain>) also selects A: pa-mve8fo7m-fsb67n.cs-ws.lab.alexluong.com(generated), pa-mve8fo7m.idp.internal(primary)
+
+## 2. x-zitadel-public-host
+pub=shop-a-mve8fo7m.brand.test (NOT registered anywhere): 404 unable to set instance using origin &{pa-mve8fo7m.idp.internal shop-a-mve8fo7m.brand.test http} (ExternalDomain is cs-ws.lab.alexluong.com): ID=QUERY-IuGh1 Mess…
+login with pub=shop-a-mve8fo7m.brand.test: FAIL authorize: 404 unable to set instance using origin &{pa-mve8fo7m.idp.internal shop-a-mve8fo7m.brand.test http} (ExternalDomain is cs-ws.lab.alexluong.com): ID=QUERY-IuGh1 Message=Instance not found. Make sure you got the domain right. Check out https://zitadel.com/docs/apis/introduction#domains Pare…
+pub=shop-a-mve8fo7m.brand.test:8443 (with port): 404 unable to set instance using origin &{pa-mve8fo7m.idp.internal shop-a-mve8fo7m.brand.test:8443 http} (ExternalDomain is cs-ws.lab.alexluong.com): ID=QUERY-IuGh1…
+pub=pb-mve8fo7m.idp.internal (another instance's domain): 404 unable to set instance using origin &{pa-mve8fo7m.idp.internal pb-mve8fo7m.idp.internal http} (ExternalDomain is cs-ws.lab.alexluong.com): ID=QUERY-IuGh1 Messag…
+System API add instance domain shop-a2-mve8fo7m.brand.test to A: 200 {"details":{"sequence":"12", "creationDate":"2026-10-18T19:42:41.896359Z", "resourceOwner":"395701640683876355"}}
+Admin API add trusted domain shop-a3-mve8fo7m.brand.test to A: 200 {"details":{"sequence":"109", "creationDate":"2026-10-18T19:42:41.951420Z", "resourceOwner":"395701640683876355"}}
+pub=shop-a2-mve8fo7m.brand.test (instance domain, not trusted): 404 unable to set instance using origin &{pa-mve8fo7m.idp.internal shop-a2-mve8fo7m.brand.test http} (ExternalDomain is cs-ws.lab.alexluong.com): ID=QUERY-IuGh1 Mes…
+pub=shop-a3-mve8fo7m.brand.test (trusted domain):  issuer=http://shop-a3-mve8fo7m.brand.test authz=http://shop-a3-mve8fo7m.brand.test/oauth/v2/authorize
+Host=shop-a2-mve8fo7m.brand.test, no headers → selects A by Host: "issuer":"http://shop-a2-mve8fo7m.brand.test"
+Host=shop-a3-mve8fo7m.brand.test (trusted only), no headers:     Instance not found
+two pubs, one instance: iss1=http://shop-a4-mve8fo7m.brand.test kid1=395701640717692931  iss2=http://shop-a3-mve8fo7m.brand.test kid2=395701640717692931
+JWKS via pub shop-a4: kids=[395701640717692931,395701640851648515] (same as header-only A: true)
+userinfo under pub shop-a3 with token iss=shop-a4: 401 {"error":"access_denied","error_description":"access token invalid"}
+
+userinfo with no pub (issuer = instance domain) with token iss=shop-a4: 401
+authorize location (pub shop-a4): /ui/v2/login/login?authRequest=V2_395701655028461571
+
+done
