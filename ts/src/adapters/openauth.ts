@@ -44,6 +44,18 @@ export const subjects = createSubjects({
   client: z.object({ clientId: z.string() }),
 })
 
+/** Gate in front of the issuer's /authorize. `allow()` is not enough: when it says no, the issuer's
+ *  error handler still 302s to the rejected redirect_uri (an open redirect, cf. issue #299). And
+ *  `allow()` never sees response_type or PKCE, so it can't refuse the implicit flow (tokens in a URL
+ *  fragment) or a code flow without PKCE for a public client. */
+export function checkAuthorize(q: URLSearchParams, cfg: Pick<OpenAuthConfig, 'firstPartyClient' | 'redirectUris'>): string | undefined {
+  if (q.get('client_id') !== cfg.firstPartyClient) return 'unknown client_id'
+  if (!cfg.redirectUris.includes(q.get('redirect_uri') ?? '')) return 'redirect_uri not registered'
+  if (q.get('response_type') !== 'code') return 'only response_type=code'
+  if (q.get('code_challenge_method') !== 'S256' || !q.get('code_challenge')) return 'PKCE (S256) required'
+  return undefined
+}
+
 const sha256 = (s: string) => createHash('sha256').update(s).digest()
 
 /** Our users table, read by `success` (email → user id). Injected so the adapter doesn't import the app schema. */
@@ -122,6 +134,10 @@ export async function makeOpenAuth(cfg: OpenAuthConfig, lookupUser: UserLookup) 
   const base = new URL(cfg.baseUrl)
   async function handler(req: Request): Promise<Response> {
     const u = new URL(req.url)
+    if (u.pathname === '/authorize') {
+      const bad = checkAuthorize(u.searchParams, cfg)
+      if (bad) return json(400, { error: 'invalid_request', error_description: bad })
+    }
     const url = new URL(u.pathname + u.search, base)
     const headers = new Headers(req.headers)
     for (const h of ['x-forwarded-host', 'x-forwarded-proto', 'x-forwarded-port', 'host']) headers.delete(h)
