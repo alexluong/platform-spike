@@ -19,6 +19,7 @@ import type {
   Shipment,
   Store,
   Assignment,
+  Identity,
 } from './types'
 
 const runId = `${Date.now().toString(36)}${randomBytes(3).toString('hex')}`
@@ -52,11 +53,17 @@ export interface ClientActor {
 
 export type PlatformRole = 'platform_admin' | 'support'
 
+export const newEmail = (label: string) => `${uniq(label)}@example.com`.toLowerCase()
+export const newPassword = () => `Cf-${randomBytes(8).toString('hex')}-Aa1!`
+
 /** Create an identity via `/api/_test/users` and log it in through the stack's real login path. */
-export async function newUser(kind: Actor['kind'], opts: { platformRole?: PlatformRole; label?: string } = {}): Promise<Actor> {
+export async function newUser(
+  kind: Actor['kind'],
+  opts: { platformRole?: PlatformRole; label?: string; email?: string; password?: string } = {},
+): Promise<Actor> {
   const label = opts.label ?? kind
-  const email = `${uniq(label)}@example.com`.toLowerCase()
-  const password = `Cf-${randomBytes(8).toString('hex')}-Aa1!`
+  const email = opts.email ?? newEmail(label)
+  const password = opts.password ?? newPassword()
   const body: Record<string, unknown> = { email, password, kind }
   if (opts.platformRole) body.platformRole = opts.platformRole
   const u = ok(await anon.post<{ id: string; email: string }>('/api/_test/users', body, { 'x-test-secret': env.testSecret }), 201)
@@ -249,4 +256,103 @@ export async function merchantWithStore(): Promise<{ m: MerchantWorld; s: Store 
   const m = await newMerchant()
   const s = await m.store()
   return { m, s }
+}
+
+// ---------- round 4: multi-pool (SPEC §16; `multi-pool` stacks only) ----------
+
+export const multiPool = driver.features?.includes('multi-pool') ?? false
+
+/** A merchant's tenant-pool identity (SPEC §16.4): `user` = its staff, `customer` = its customer. */
+export interface TenantActor extends Actor {
+  kind: 'user' | 'customer'
+  merchantId: string
+}
+
+function needDriver<K extends 'loginTenant' | 'loginWithShop'>(method: K): NonNullable<(typeof driver)[K]> {
+  const fn = driver[method]
+  if (!fn) throw new Error(`driver declares multi-pool but has no ${method} (SPEC §16.4)`)
+  return fn.bind(driver) as NonNullable<(typeof driver)[K]>
+}
+
+/** Tenant-pool login through the driver (rejects when the pool refuses). */
+export function loginTenant(merchantId: string, kind: TenantActor['kind'], email: string, password: string): Promise<string> {
+  return needDriver('loginTenant')(merchantId, kind, email, password)
+}
+
+export function reloginTenant(who: Pick<TenantActor, 'merchantId' | 'kind' | 'email' | 'password'>): Promise<string> {
+  return loginTenant(who.merchantId, who.kind, who.email, who.password)
+}
+
+/** "Sign in with Shop" at `merchantId` (SPEC §16.5): a token issued by the merchant's tenant pool. */
+export function loginWithShop(merchantId: string, buyer: Pick<Actor, 'email' | 'password'>): Promise<string> {
+  return needDriver('loginWithShop')(merchantId, buyer.email, buyer.password)
+}
+
+/** `POST /api/_test/merchants/:mid/users` only (no login). */
+export async function createTenantUser(
+  merchantId: string,
+  kind: TenantActor['kind'],
+  opts: { email?: string; password?: string; label?: string } = {},
+): Promise<{ id: string; email: string; password: string }> {
+  const email = opts.email ?? newEmail(opts.label ?? `t-${kind}`)
+  const password = opts.password ?? newPassword()
+  const u = ok(
+    await anon.post<{ id: string; email: string }>(`/api/_test/merchants/${merchantId}/users`, { email, password, kind }, { 'x-test-secret': env.testSecret }),
+    201,
+  )
+  return { id: String(u.id), email, password }
+}
+
+/** Identity in `merchantId`'s tenant pool, logged in there (SPEC §16.4). Staff start as members with no roles. */
+export async function newTenantUser(
+  merchantId: string,
+  kind: TenantActor['kind'],
+  opts: { email?: string; password?: string; label?: string } = {},
+): Promise<TenantActor> {
+  const label = opts.label ?? (kind === 'user' ? 'tstaff' : 'tcustomer')
+  const u = await createTenantUser(merchantId, kind, { ...opts, label })
+  const token = await loginTenant(merchantId, kind, u.email, u.password)
+  return { ...u, kind, merchantId, token, api: anon.as(token, label) }
+}
+
+/** `GET /api/merchants/:mid/identity` (no auth) → the tenant issuer (SPEC §16.3). */
+export async function tenantIssuer(merchantId: string): Promise<string> {
+  const body = ok(await anon.get<Identity>(`/api/merchants/${merchantId}/identity`), 200)
+  if (typeof body?.issuer !== 'string' || body.issuer.length === 0) throw new Error(`GET /api/merchants/${merchantId}/identity: no issuer in ${JSON.stringify(body)}`)
+  return body.issuer
+}
+
+/**
+ * Poll `GET /api/merchants/:mid` as the owner until `status: "active"` (SPEC §16.3: within 60 s).
+ * Returns the milliseconds it took.
+ */
+export async function waitActive(m: { id: string; owner: Actor }, timeoutMs = 60_000): Promise<number> {
+  const start = Date.now()
+  let last = ''
+  for (;;) {
+    const r = await m.owner.api.get<Merchant>(`/api/merchants/${m.id}`)
+    if (r.status === 200 && r.body?.status === 'active') return Date.now() - start
+    last = `${r.status} ${r.text.slice(0, 200)}`
+    if (Date.now() - start > timeoutMs) throw new Error(`merchant ${m.id} not active after ${timeoutMs} ms (last GET /api/merchants/${m.id}: ${last})`)
+    await sleep(500)
+  }
+}
+
+/** Fresh merchant whose tenant pool is ready (status `active`). */
+export async function newActiveMerchant(): Promise<MerchantWorld> {
+  const m = await newMerchant()
+  await waitActive(m)
+  return m
+}
+
+/** The `iss` claim when `token` is a JWT; `undefined` for opaque tokens. Not verified. */
+export function jwtIssuer(token: string): string | undefined {
+  const parts = token.split('.')
+  if (parts.length !== 3) return undefined
+  try {
+    const payload = JSON.parse(Buffer.from(parts[1]!, 'base64url').toString('utf8')) as { iss?: unknown }
+    return typeof payload.iss === 'string' ? payload.iss : undefined
+  } catch {
+    return undefined
+  }
 }
