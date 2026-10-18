@@ -1,0 +1,65 @@
+# Stack g: stack c (TypeScript Hono + Cerbos + Postgres) with OpenAuth instead of Better Auth.
+#   DOCKER_HOST=ssh://cs-ws docker compose -p ps-g --profile g up -d --build
+# Same app image as c (../../ts), IDENTITY=openauth. OpenAuth's issuer runs inside the app process
+# and keeps its key/value data (keys, password hashes, codes, refresh tokens) in this Postgres.
+# Cerbos policies come from stack c's image build context (unchanged).
+services:
+  g-postgres:
+    profiles: ["g"]
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: ps
+      POSTGRES_PASSWORD: ps-dev-only
+      POSTGRES_DB: ps
+    command: ["postgres", "-c", "shared_buffers=64MB", "-c", "max_connections=60"]
+    volumes:
+      - g-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ps -d ps"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    mem_limit: 384m
+
+  g-cerbos:
+    profiles: ["g"]
+    build: ../c/cerbos
+    healthcheck:
+      test: ["CMD", "/cerbos", "healthcheck", "--config=/etc/platform/config.yaml"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    mem_limit: 256m
+
+  g-app:
+    profiles: ["g"]
+    build: ../../ts
+    depends_on:
+      g-postgres: { condition: service_healthy }
+      g-cerbos: { condition: service_healthy }
+    environment:
+      PORT: "8093"
+      DATABASE_URL: postgres://ps:ps-dev-only@g-postgres:5432/ps
+      CERBOS_ADDRESS: g-cerbos:3593
+      IDENTITY: openauth
+      # pinned token issuer (`iss`); the issuer ignores Host / X-Forwarded-* for it
+      AUTH_BASE_URL: http://${STACK_G_HOST:-cs-ws.lab.alexluong.com}:8093
+      AUTH_CLIENT_ID: platform-cli
+      AUTH_REDIRECT_URIS: http://127.0.0.1/callback
+      AUTH_ACCESS_TTL: "900"
+      AUTH_REFRESH_TTL: "86400"
+      TEST_MODE: "1"
+      TEST_SECRET: test-secret
+    ports:
+      - "8093:8093"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:8093/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 3s
+      timeout: 3s
+      retries: 40
+      start_period: 5s
+    mem_limit: 512m
+    restart: unless-stopped
+
+volumes:
+  g-pgdata:

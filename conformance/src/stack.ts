@@ -7,8 +7,9 @@ import d from '../stacks/d'
 import e from '../stacks/e'
 import a2 from '../stacks/a2'
 import f from '../stacks/f'
+import g from '../stacks/g'
 
-const drivers: Record<StackName, StackDriver> = { a, b, c, d, e, a2, f }
+const drivers: Record<StackName, StackDriver> = { a, b, c, d, e, a2, f, g }
 
 export function getDriver(): StackDriver {
   return drivers[env.stack]
