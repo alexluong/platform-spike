@@ -52,6 +52,8 @@ Go tests: 12 new integration tests in `go/internal/adapters/oidcop/oidcop_test.g
 
 ## Security checklist (from review-f, review-g, review-a 8)
 
+> Review (`review-h.md`) found the code handed out by the library's `/authorize/callback` to anyone holding the auth request id (high, fixed: `/login` now answers with the code, the callback is closed), a parallel bypass of #10 and a client-lockout DoS (both fixed). Updated checklist there.
+
 | # | item | who | how / evidence |
 |---|---|---|---|
 | 1 | Issuer from `Host` / `X-Forwarded-*` | **library**, if you pick it | `op.StaticIssuer(PUBLIC_URL + "/oidc")`. The library also ships `IssuerFromHost` / `IssuerFromForwardedOrHost`, so the trap is one constructor away. Probed from cs-ws with spoofed `Host`, `X-Forwarded-Host`, `Forwarded`: issuer unchanged. `TestIssuerPinned`. http issuers need `WithAllowInsecure()`. |
