@@ -151,8 +151,10 @@ func (s *Issuer) AuthRequestByID(ctx context.Context, id string) (op.AuthRequest
 // gets invalid_grant. The library reads, then deletes after issuing tokens, so a plain
 // read would let parallel /token calls redeem one code several times (review-g #7).
 func (s *Issuer) AuthRequestByCode(ctx context.Context, code string) (op.AuthRequest, error) {
+	// A suspended pool mints nothing, not even for a code issued just before the suspension.
 	return scanAuthRequest(s.db.QueryRow(ctx, `UPDATE idp_auth_requests SET code_used=true
-		WHERE code=$1 AND pool_id=$2 AND NOT code_used AND done AND expires_at > now() RETURNING `+authRequestCols, code, pid(ctx)))
+		WHERE code=$1 AND pool_id=$2 AND NOT code_used AND done AND expires_at > now()
+		AND EXISTS (SELECT 1 FROM idp_pools p WHERE p.id = $2 AND p.status = 'active') RETURNING `+authRequestCols, code, pid(ctx)))
 }
 
 // SaveAuthCode: one code per request; a second callback visit gets an error.
@@ -240,12 +242,18 @@ func (s *Issuer) CreateAccessAndRefreshTokens(ctx context.Context, req op.TokenR
 
 // TokenRequestByRefreshToken: a live token of an enabled user. Presenting a token that was
 // already rotated means it leaked (or the client raced itself): the family is revoked.
+// A user federated from an upstream pool (Sign in with Shop) also needs its upstream account to
+// exist and be enabled: disabling or deleting a Shop account ends its sessions at every merchant
+// at the next refresh, not only its next Shop login. (One deliberate cross-pool read: the link
+// itself. With Shop in global services and tenant pools in cells this becomes a back-channel
+// logout or a status check over HTTP.)
 func (s *Issuer) TokenRequestByRefreshToken(ctx context.Context, token string) (op.RefreshTokenRequest, error) {
 	var r refreshRequest
 	var family string
 	var rotated, revoked, userOK bool
 	err := s.db.QueryRow(ctx, `SELECT t.family, t.user_id, t.client_id, t.scopes, t.audience, t.amr, t.auth_time,
 			t.rotated_at IS NOT NULL, t.revoked_at IS NOT NULL OR t.expires_at <= now(), u.disabled_at IS NULL AND p.status = 'active'
+			AND (u.upstream_pool IS NULL OR EXISTS (SELECT 1 FROM idp_users up WHERE up.pool_id = u.upstream_pool AND up.id = u.upstream_sub AND up.disabled_at IS NULL))
 		FROM idp_refresh_tokens t JOIN idp_users u ON u.id = t.user_id AND u.pool_id = t.pool_id JOIN idp_pools p ON p.id = t.pool_id
 		WHERE t.id=$1 AND t.pool_id=$2`, sha256Hex(token), pid(ctx)).
 		Scan(&family, &r.userID, &r.clientID, &r.scopes, &r.audience, &r.amr, &r.authTime, &rotated, &revoked, &userOK)
@@ -255,7 +263,7 @@ func (s *Issuer) TokenRequestByRefreshToken(ctx context.Context, token string) (
 		return nil, err
 	}
 	if rotated && !revoked {
-		_, _ = s.db.Exec(ctx, `UPDATE idp_refresh_tokens SET revoked_at=now() WHERE family=$1 AND revoked_at IS NULL`, family)
+		_, _ = s.db.Exec(ctx, `UPDATE idp_refresh_tokens SET revoked_at=now() WHERE family=$1 AND pool_id=$2 AND revoked_at IS NULL`, family, pid(ctx))
 		s.log.Warn("refresh token reuse: family revoked", "user", r.userID)
 	}
 	if rotated || revoked || !userOK {

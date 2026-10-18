@@ -233,7 +233,7 @@ func (s *Issuer) CreateClient(ctx context.Context, name, merchantID string) (ide
 
 // DeleteClient (identity port): the secret stops minting tokens at once (caller's transaction).
 func (s *Issuer) DeleteClient(ctx context.Context, clientID string) error {
-	_, err := db.TxOr(ctx, s.db).Exec(ctx, `UPDATE idp_clients SET deleted_at=now() WHERE id=$1 AND kind='machine' AND deleted_at IS NULL`, clientID)
+	_, err := db.TxOr(ctx, s.db).Exec(ctx, `UPDATE idp_clients SET deleted_at=now() WHERE id=$1 AND pool_id='platform' AND kind='machine' AND deleted_at IS NULL`, clientID)
 	return err
 }
 
