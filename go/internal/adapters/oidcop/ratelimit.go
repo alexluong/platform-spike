@@ -11,7 +11,7 @@ import (
 
 // Failure caps per window (limitWindow).
 const (
-	maxFailsPerSource  = 10  // email+IP, client id
+	maxFailsPerSource  = 10  // email+IP, client id+IP
 	maxFailsPerAccount = 100 // email, any IP
 	limitWindow        = 15 * time.Minute
 )
@@ -19,7 +19,7 @@ const (
 // limits: in-memory, per instance (N instances allow N times as much). Production needs a
 // shared store (Postgres or Redis) or an edge limiter, plus a CAPTCHA on public sign-in.
 //   - per client IP: a token bucket over password logins and /token calls;
-//   - per key (email+IP, email, client id): failures in a window; at maxFails the key is
+//   - per key (email+IP, email, client id+IP): failures in a window; at maxFails the key is
 //     refused until the window ends. email+IP stops one source guessing; the looser
 //     per-email cap bounds a distributed guess without letting one IP lock a user out.
 type limits struct {
@@ -64,6 +64,34 @@ func (l *limits) locked(key string, max int) bool {
 	return ok && time.Now().Before(f.until) && f.n >= max
 }
 
+// attempt counts an attempt as a failure up front (check and count in one step), so N
+// parallel guesses can't all pass a check made before any of them failed. false: the key
+// is at max. A successful attempt calls release.
+func (l *limits) attempt(key string, max int) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	f, ok := l.fails[key]
+	if !ok || time.Now().After(f.until) {
+		f = &failWindow{until: time.Now().Add(l.window)}
+		l.fails[key] = f
+	}
+	if f.n >= max {
+		return false
+	}
+	f.n++
+	return true
+}
+
+func (l *limits) release(keys ...string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	for _, k := range keys {
+		if f, ok := l.fails[k]; ok && f.n > 0 {
+			f.n--
+		}
+	}
+}
+
 func (l *limits) fail(key string) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -103,11 +131,18 @@ func clientIP(r *http.Request) string {
 	return host
 }
 
-// limitToken wraps the issuer's /oauth/token: the per-IP bucket for every call, and failed
-// client_credentials calls count against the client id (secret guessing). Failed code or
-// refresh exchanges don't count: they'd lock the shared public client for everyone.
+// limitToken wraps the issuer: the callback endpoint is closed; on /oauth/token, the per-IP
+// bucket for every call, and failed client_credentials calls count against client id + IP.
+// Failed code or refresh exchanges don't count: they'd lock the shared public client for
+// everyone.
 func (s *Issuer) limitToken(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// The login step answers with the code itself (handleLogin); the library's callback
+		// would give the code to anyone holding the auth request id.
+		if r.URL.Path == "/authorize/callback" || r.URL.EscapedPath() == "/authorize/callback" {
+			http.NotFound(w, r)
+			return
+		}
 		if r.URL.Path != "/oauth/token" {
 			next.ServeHTTP(w, r)
 			return
@@ -128,7 +163,9 @@ func (s *Issuer) limitToken(next http.Handler) http.Handler {
 			if !ok {
 				id = r.PostForm.Get("client_id")
 			}
-			key = "client:" + id
+			// Per client and source: secrets are 256-bit, so this only slows a scanner; a
+			// per-client key would let anyone lock an app or agent out with 10 bad secrets.
+			key = "client:" + id + "|" + clientIP(r)
 			if s.limits.locked(key, maxFailsPerSource) {
 				tooMany()
 				return

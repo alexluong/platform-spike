@@ -68,6 +68,10 @@ func New(ctx context.Context, pool *pgxpool.Pool, cfg Config, log *slog.Logger) 
 	if err := keys.ensure(ctx); err != nil {
 		return nil, fmt.Errorf("oidcop: signing key: %w", err)
 	}
+	// Fail at start, not on every token, when the keys don't decrypt (wrong ISSUER_SECRET).
+	if _, err := keys.live(ctx, true); err != nil {
+		return nil, fmt.Errorf("oidcop: signing keys: %w", err)
+	}
 	s := &Issuer{
 		cfg: cfg, db: pool, log: log, keys: keys,
 		limits: newLimits(50, 200, limitWindow),

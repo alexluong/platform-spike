@@ -7,12 +7,14 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
-	"net/url"
 	"runtime"
+	"runtime/debug"
 	"strings"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/zitadel/oidc/v3/pkg/op"
 	"golang.org/x/crypto/argon2"
 
 	"github.com/alexluong/platform-spike/go/internal/core"
@@ -20,8 +22,11 @@ import (
 )
 
 // Passwords: argon2id at OWASP's minimum (19 MiB, 2 passes, 1 lane), ~20-40 ms of CPU.
-// At most GOMAXPROCS hashes run at once: each one holds 19 MiB, and a burst of logins
-// would otherwise multiply that and starve the API of CPU.
+// At most hashSlots hashes run at once: each one holds 19 MiB, and a burst of logins
+// would otherwise multiply that and starve the API of CPU. The cap is GOMAXPROCS, and no
+// more than half of GOMEMLIMIT's worth of hash buffers (GC garbage from finished
+// hashes needs room too): GOMAXPROCS alone follows the host's or the cgroup's CPUs, not
+// the container's memory.
 const (
 	argonMem     = 19 * 1024
 	argonTime    = 2
@@ -29,7 +34,15 @@ const (
 	argonKeyLen  = 32
 )
 
-var hashSlots = make(chan struct{}, runtime.GOMAXPROCS(0))
+var hashSlots = make(chan struct{}, hashConcurrency(runtime.GOMAXPROCS(0), debug.SetMemoryLimit(-1)))
+
+func hashConcurrency(procs int, memLimit int64) int {
+	n := procs
+	if memLimit > 0 && memLimit < math.MaxInt64 {
+		n = min(n, int(memLimit/2/(argonMem*1024)))
+	}
+	return max(n, 1)
+}
 
 func hashPassword(pw string) string {
 	salt := make([]byte, 16)
@@ -98,8 +111,8 @@ func (s *Issuer) authenticate(ctx context.Context, email, password string) (stri
 
 // login is the login step of the code flow, headless (SPEC §10): /authorize redirects here
 // with ?id=<auth request>; a UI would render a form. GET describes the form, POST checks
-// the password, marks the auth request done and sends the browser to the issuer's
-// callback, which issues the code to the registered redirect URI.
+// the password, marks the auth request done and answers with the code: a redirect to the
+// registered redirect URI (op.AuthResponse), never via the library's callback endpoint.
 func (s *Issuer) handleLogin(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodGet {
 		core.WriteJSON(w, 200, map[string]any{"authRequestId": r.URL.Query().Get("id"), "fields": []string{"email", "password"}})
@@ -116,28 +129,46 @@ func (s *Issuer) handleLogin(w http.ResponseWriter, r *http.Request) {
 	}
 	id, email, pw := r.PostForm.Get("id"), strings.ToLower(strings.TrimSpace(r.PostForm.Get("email"))), r.PostForm.Get("password")
 	ip := clientIP(r)
-	if !s.limits.allowIP(ip) || s.limits.locked("login:"+email+"|"+ip, maxFailsPerSource) || s.limits.locked("login:"+email, maxFailsPerAccount) {
-		w.Header().Set("Retry-After", "60")
-		core.WriteJSON(w, 429, map[string]string{"error": "too_many_attempts"})
-		return
-	}
 	var pending bool
 	if err := s.db.QueryRow(r.Context(), `SELECT EXISTS(SELECT 1 FROM idp_auth_requests WHERE id=$1 AND NOT done AND expires_at > now())`, id).Scan(&pending); err != nil || !pending {
 		core.WriteJSON(w, 400, map[string]string{"error": "invalid_auth_request"})
 		return
 	}
+	// Each attempt takes a slot before the hash runs, so parallel guesses can't all pass
+	// the check before the first failure is counted; a success gives its slot back.
+	tooMany := func() {
+		w.Header().Set("Retry-After", "60")
+		core.WriteJSON(w, 429, map[string]string{"error": "too_many_attempts"})
+	}
+	keys := []string{"login:" + email + "|" + ip, "login:" + email}
+	if !s.limits.allowIP(ip) || !s.limits.attempt(keys[0], maxFailsPerSource) {
+		tooMany()
+		return
+	}
+	if !s.limits.attempt(keys[1], maxFailsPerAccount) {
+		s.limits.release(keys[0])
+		tooMany()
+		return
+	}
 	uid, ok := s.authenticate(r.Context(), email, pw)
 	if !ok {
-		s.limits.fail("login:" + email + "|" + ip)
-		s.limits.fail("login:" + email)
 		core.WriteJSON(w, 401, map[string]string{"error": "invalid_credentials"})
 		return
 	}
+	s.limits.release(keys...)
 	tag, err := s.db.Exec(r.Context(), `UPDATE idp_auth_requests SET user_id=$2, auth_time=now(), done=true
 		WHERE id=$1 AND NOT done AND expires_at > now()`, id, uid)
 	if err != nil || tag.RowsAffected() != 1 {
 		core.WriteJSON(w, 400, map[string]string{"error": "invalid_auth_request"})
 		return
 	}
-	http.Redirect(w, r, s.cfg.Issuer+"/authorize/callback?id="+url.QueryEscape(id), http.StatusFound)
+	// The code goes to whoever submitted the password, in this response. The library's
+	// /authorize/callback?id= would hand the code to anyone holding the auth request id,
+	// and whoever started /authorize has it (blocked in Mount).
+	ar, err := s.AuthRequestByID(r.Context(), id)
+	if err != nil {
+		core.WriteJSON(w, 400, map[string]string{"error": "invalid_auth_request"})
+		return
+	}
+	op.AuthResponse(ar, s.provider, w, r)
 }

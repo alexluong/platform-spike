@@ -3,10 +3,10 @@
 //
 // loginUser: authorization code + PKCE (S256) with the first-party public client, headless:
 //   1. GET  /oidc/authorize?…           → 302 to /login?id=<auth request>
-//   2. POST /login (id, email, password) → 302 to /oidc/authorize/callback?id=…
-//      (what a login page would post; the app's login step, not part of the library)
-//   3. GET  /oidc/authorize/callback     → 302 to the redirect URI with ?code=
-//   4. POST /oidc/oauth/token (code + verifier) → JWT access token for the API
+//   2. POST /login (id, email, password) → 302 to the redirect URI with ?code=
+//      (what a login page would post; the app's login step answers with the code itself:
+//      the library's /authorize/callback?id= is closed, it gave the code to any holder of the id)
+//   3. POST /oidc/oauth/token (code + verifier) → JWT access token for the API
 // loginClient: client_credentials at /oidc/oauth/token (HTTP Basic).
 import { createHash, randomBytes } from 'node:crypto'
 import type { StackDriver } from '../src/driver'
@@ -59,11 +59,9 @@ const driver: StackDriver = {
     const login = await post(`${baseUrl}/login`, new URLSearchParams({ id, email, password }))
     if (login.status !== 302) return fail('login', login)
 
-    const cb = await get(new URL(location(login).pathname + location(login).search, baseUrl))
-    if (cb.status !== 302) return fail('callback', cb)
-    const back = new URL(cb.headers.get('location') ?? '')
+    const back = new URL(login.headers.get('location') ?? '')
     const code = back.searchParams.get('code')
-    if (!code || back.searchParams.get('state') !== state) throw new Error(`stack h callback: unexpected redirect ${back}`)
+    if (!code || back.searchParams.get('state') !== state) throw new Error(`stack h login: unexpected redirect ${back}`)
 
     const tok = await post(
       `${baseUrl}/oidc/oauth/token`,

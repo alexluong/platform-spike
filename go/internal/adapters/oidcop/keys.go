@@ -162,11 +162,21 @@ func (k *keyRing) live(ctx context.Context, force bool) ([]sigKey, error) {
 	return keys, nil
 }
 
-// signing: the newest key whose sign_from has passed.
+// signing: the newest key whose sign_from has passed. With no live key at all (every key
+// retired, e.g. a leaked key retired by hand), create one rather than fail every login
+// until a restart; ensure's lock keeps that to one key across instances.
 func (k *keyRing) signing(ctx context.Context) (sigKey, error) {
 	keys, err := k.live(ctx, false)
 	if err != nil {
 		return sigKey{}, err
+	}
+	if len(keys) == 0 {
+		if err := k.ensure(ctx); err != nil {
+			return sigKey{}, err
+		}
+		if keys, err = k.live(ctx, true); err != nil {
+			return sigKey{}, err
+		}
 	}
 	now := time.Now()
 	for i := len(keys) - 1; i >= 0; i-- {

@@ -16,6 +16,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"math"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -153,7 +154,7 @@ func authorizeQuery(challenge string, extra map[string]string) string {
 	return q.Encode()
 }
 
-// code runs authorize → login → callback and returns the code (or fails).
+// code runs authorize → login (which answers with the code) and returns the code (or fails).
 func (e *env) code(email, pw, challenge string, extra map[string]string) string {
 	e.t.Helper()
 	res := e.get("/oidc/authorize?" + authorizeQuery(challenge, extra))
@@ -166,11 +167,9 @@ func (e *env) code(email, pw, challenge string, extra map[string]string) string 
 	if res.StatusCode != 302 {
 		e.t.Fatalf("login: %d %s", res.StatusCode, body(res))
 	}
-	cb, _ := url.Parse(res.Header.Get("Location"))
-	res = e.get(cb.Path + "?" + cb.RawQuery)
 	back, _ := url.Parse(res.Header.Get("Location"))
-	if res.StatusCode != 302 || back.Query().Get("code") == "" {
-		e.t.Fatalf("callback: %d %s", res.StatusCode, back)
+	if back.Query().Get("code") == "" || !strings.HasPrefix(back.String(), redirect) {
+		e.t.Fatalf("login: no code in %s", back)
 	}
 	return back.Query().Get("code")
 }
@@ -394,7 +393,10 @@ func TestCodeSingleUse(t *testing.T) {
 	}
 }
 
-func TestCallbackIssuesOneCode(t *testing.T) {
+// The code goes only to whoever submitted the password: the library's callback endpoint
+// (code for anyone holding the auth request id, which whoever started /authorize has) is
+// closed, and a done request can't be logged into again.
+func TestCodeOnlyToTheLogin(t *testing.T) {
 	e := newEnv(t)
 	email := uniq("cb")
 	e.user(email, "pw")
@@ -403,18 +405,59 @@ func TestCallbackIssuesOneCode(t *testing.T) {
 	loc, _ := url.Parse(res.Header.Get("Location"))
 	id := loc.Query().Get("id")
 	res = e.post("/login", url.Values{"id": {id}, "email": {email}, "password": {"pw"}})
-	cb, _ := url.Parse(res.Header.Get("Location"))
-	first := e.get(cb.Path + "?" + cb.RawQuery)
-	second := e.get(cb.Path + "?" + cb.RawQuery)
-	if first.StatusCode != 302 || !strings.Contains(first.Header.Get("Location"), "code=") {
-		t.Fatalf("first callback: %d", first.StatusCode)
+	if res.StatusCode != 302 || !strings.Contains(res.Header.Get("Location"), "code=") {
+		t.Fatalf("login: %d %s", res.StatusCode, res.Header.Get("Location"))
 	}
-	if strings.Contains(second.Header.Get("Location"), "code=") {
-		t.Fatal("second callback minted another code")
+	for _, p := range []string{"/oidc/authorize/callback?id=", "/oidc/authorize/%63allback?id="} {
+		if cb := e.get(p + url.QueryEscape(id)); cb.StatusCode != 404 {
+			t.Fatalf("%s: %d %s", p, cb.StatusCode, cb.Header.Get("Location"))
+		}
 	}
-	// The login step can't be replayed on a done request.
+	if err := e.iss.SaveAuthCode(context.Background(), id, "second"); err == nil {
+		t.Fatal("a second code was saved for one request")
+	}
 	if res := e.post("/login", url.Values{"id": {id}, "email": {email}, "password": {"pw"}}); res.StatusCode == 302 {
 		t.Fatal("login replayed")
+	}
+}
+
+// Parallel guesses can't outrun the failure count: every attempt is counted before it hashes.
+func TestParallelGuessesCapped(t *testing.T) {
+	e := newEnv(t)
+	email := uniq("par")
+	e.user(email, "right")
+	_, c := pkce()
+	res := e.get("/oidc/authorize?" + authorizeQuery(c, nil))
+	loc, _ := url.Parse(res.Header.Get("Location"))
+	id := loc.Query().Get("id")
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	counts := map[int]int{}
+	for i := 0; i < 4*maxFailsPerSource; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			st := e.post("/login", url.Values{"id": {id}, "email": {email}, "password": {"wrong"}}).StatusCode
+			mu.Lock()
+			counts[st]++
+			mu.Unlock()
+		}()
+	}
+	wg.Wait()
+	if counts[401] != maxFailsPerSource || counts[429] != 3*maxFailsPerSource {
+		t.Fatalf("40 parallel guesses: %v, want %d checked", counts, maxFailsPerSource)
+	}
+}
+
+func TestHashConcurrency(t *testing.T) {
+	for _, c := range []struct {
+		procs int
+		mem   int64
+		want  int
+	}{{4, math.MaxInt64, 4}, {4, 200 << 20, 4}, {64, 200 << 20, 5}, {64, 1 << 30, 26}, {1, 10 << 20, 1}, {8, 0, 8}} {
+		if got := hashConcurrency(c.procs, c.mem); got != c.want {
+			t.Errorf("hashConcurrency(%d, %d) = %d, want %d", c.procs, c.mem, got, c.want)
+		}
 	}
 }
 
@@ -527,7 +570,8 @@ func TestMachineClientsInTx(t *testing.T) {
 		t.Fatal("deleted client got a token")
 	}
 
-	// Secret guessing: locked after maxFailsPerSource failures.
+	// Secret guessing: locked after maxFailsPerSource failures from one source (client id +
+	// IP; this test has one IP).
 	var c2 identity.Client
 	c2, _ = e.iss.CreateClient(ctx, "app-z", "")
 	for i := 0; i < maxFailsPerSource; i++ {
@@ -648,6 +692,11 @@ func TestKeysEncryptedAtRest(t *testing.T) {
 	if _, err := wrong.live(context.Background(), true); err == nil {
 		t.Fatal("keys decrypt with another secret")
 	}
+	// An instance with the wrong secret refuses to start (instead of failing every token).
+	if _, err := New(context.Background(), e.pool, Config{Issuer: "http://x/oidc", Secret: "another-secret-0123456789abcdef-0123"},
+		slog.New(slog.NewTextHandler(io.Discard, nil))); err == nil {
+		t.Fatal("started with a secret that can't decrypt the keys")
+	}
 }
 
 func TestPasswordHash(t *testing.T) {
@@ -657,5 +706,24 @@ func TestPasswordHash(t *testing.T) {
 	}
 	if checkPassword("$2a$10$bcrypt", "x") || checkPassword("garbage", "x") {
 		t.Fatal("accepted a non-argon2id hash")
+	}
+}
+
+// Retiring every key by hand (a leaked key, no rotation first) doesn't stop logins until a
+// restart: the next signing creates a key.
+func TestAllKeysRetired(t *testing.T) {
+	e := newEnv(t)
+	email := uniq("retired")
+	e.user(email, "pw")
+	ctx := context.Background()
+	if _, err := e.pool.Exec(ctx, `UPDATE idp_signing_keys SET retire_at=now() WHERE retire_at IS NULL OR retire_at > now()`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.iss.keys.live(ctx, true); err != nil {
+		t.Fatal(err)
+	}
+	tok := e.login(email, "pw", nil)
+	if _, err := e.iss.Verify(ctx, tok.AccessToken); err != nil {
+		t.Fatalf("token after all keys were retired: %v", err)
 	}
 }
