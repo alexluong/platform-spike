@@ -145,12 +145,19 @@ Stacks `d` (TS + Better Auth organization plugin + Cerbos, 8086), `e` (`d` with 
 - **Zitadel organizations are worth it only for per-merchant SSO or delegated user admin.**
 - **The TS engine swap (d → e) changed one module line**, but showed d's executor had let Cerbos decide deny reasons and audit markers. e's SpiceDB relay is the most correct one built (consistency token in the DB, call deadlines).
 
+### Round 3: identity providers not yet tried
+
+Stacks `f` (stack `a` with Zitadel swapped for Logto, 8091; Logto edge 8092) and `g` (stack `c` with Better Auth swapped for OpenAuth, 8093). Run them like the others: `STACK=f|g`; on a loaded host use `MAX_WORKERS=2`. From [`results/comparison-round3.md`](results/comparison-round3.md):
+
+- **Neither beats the current picks.** Logto: the cleanest tokens, but ~6× Zitadel's CPU per login, a 2 GB image, a SQL-seeded admin client, and branding removal behind a paid licence. OpenAuth: the right shape (an issuer inside the app, users in our DB), but dormant since 2025 and the reviews needed 7 security fixes for gaps it leaves to the app.
+- **The identity-port swap held again** (zero module changes), and surfaced fixes for every Go stack: periodic JWKS refresh, a `DeleteClient` on the port.
+
 ## 5. Reference
 
 **Running.** Nothing is bind-mounted, so a remote Docker host works like a local one.
 
 ```sh
-docker compose -p ps-a --profile a up -d --build --wait     # or b, c, d, e, a2 (-p ps-<stack>)
+docker compose -p ps-a --profile a up -d --build --wait     # or b, c, d, e, a2, f, g (-p ps-<stack>)
 docker compose -p ps-a --profile a down -v                  # stop and wipe
 ```
 
@@ -168,6 +175,6 @@ go/            Go app for stacks a, b and a2; engine- and IdP-specific code only
 ts/            TypeScript app for stack c
 ts-org/        TypeScript app for stacks d and e (Better Auth organization plugin; Cerbos or SpiceDB)
 stacks/<s>/    compose file, IdP and engine config, bootstrap; Cerbos policies for c
-results/       per-stack results, reviews, comparison.md (round 1), comparison-round2.md
+results/       per-stack results, reviews, comparison.md (round 1), comparison-round2.md, comparison-round3.md
 docs/          GUIDE.md + guide.html (authz from zero + code map), review.html (the review report), patterns.md
 ```
