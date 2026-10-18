@@ -1,0 +1,149 @@
+# Stack f: stack a's Go app with Zitadel swapped for Logto (OIDC) + SpiceDB, one Postgres. SPEC §11.
+#   DOCKER_HOST=ssh://cs-ws docker compose -p ps-f --profile f up -d --build
+# Published: app 8091, and Logto's user-facing edge 8092 (issuer http://${STACK_F_HOST:-cs-ws.lab.alexluong.com}:8092/oidc).
+# The edge (nginx) passes only what a browser needs to sign in: OIDC, the sign-in pages and the
+# experience API. Logto's Management API shares its port with OIDC and stays on the compose
+# network; the admin console is not started (ADMIN_DISABLE_LOCALHOST).
+# STACK_F_HOST must be the name clients resolve the docker host by (bare cs-ws does not resolve on the Mac).
+# Inside the network the app fetches JWKS from f-logto directly and compares the issuer string only.
+# Dev-only secrets below are generated placeholders for a local stack.
+
+x-pg-dsn: &pgpass postgres-f-dev-pw
+
+services:
+  f-postgres:
+    profiles: [f]
+    build: ./postgres
+    image: platform-spike-postgres:f
+    command: ["postgres", "-c", "track_commit_timestamp=on", "-c", "max_connections=200"]
+    environment:
+      POSTGRES_PASSWORD: *pgpass
+    volumes: [f-pg:/var/lib/postgresql/data]
+    networks: [f-net]
+    mem_limit: 512m
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d app"]
+      interval: 3s
+      timeout: 5s
+      retries: 30
+
+  f-logto:
+    profiles: [f]
+    image: svhd/logto:1.45.0
+    # Seed the database on first start (skipped when it exists), deploy pending alterations, start.
+    entrypoint: ["sh", "-c", "npm run cli db seed -- --swe && npm run cli db alteration deploy 1.45.0 && npm start"]
+    environment:
+      DB_URL: postgres://postgres:postgres-f-dev-pw@f-postgres:5432/logto
+      ENDPOINT: http://${STACK_F_HOST:-cs-ws.lab.alexluong.com}:8092
+      # No admin console: nothing listens on 3002.
+      ADMIN_DISABLE_LOCALHOST: "1"
+      TRUST_PROXY_HEADER: "1"
+    networks: [f-net]
+    mem_limit: 1g
+    depends_on:
+      f-postgres: {condition: service_healthy}
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:3001/api/status').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"]
+      interval: 3s
+      timeout: 5s
+      retries: 60
+      start_period: 10s
+
+  # The app's Management API client (see postgres/logto-seed.sql: Logto OSS can't create it any other way without the console).
+  f-logto-seed:
+    profiles: [f]
+    image: platform-spike-postgres:f
+    command: ["psql", "-h", "f-postgres", "-U", "postgres", "-d", "logto",
+              "-v", "client_id=psadminm2m", "-v", "client_secret=logto-f-dev-admin-secret",
+              "-f", "/seed/logto-seed.sql"]
+    environment:
+      PGPASSWORD: *pgpass
+    networks: [f-net]
+    depends_on:
+      f-logto: {condition: service_healthy}
+
+  f-logto-edge:
+    profiles: [f]
+    build: ./edge
+    image: platform-spike-logto-edge:f
+    ports: ["8092:8092"]
+    networks: [f-net]
+    mem_limit: 64m
+    depends_on:
+      f-logto: {condition: service_healthy}
+
+  f-spicedb-migrate:
+    profiles: [f]
+    image: authzed/spicedb:v1.56.2
+    command: ["datastore", "migrate", "head", "--datastore-engine=postgres",
+              "--datastore-conn-uri=postgres://postgres:postgres-f-dev-pw@f-postgres:5432/spicedb?sslmode=disable"]
+    networks: [f-net]
+    depends_on:
+      f-postgres: {condition: service_healthy}
+
+  f-spicedb:
+    profiles: [f]
+    image: authzed/spicedb:v1.56.2
+    command: ["serve", "--grpc-preshared-key=spicedb-f-dev-key", "--datastore-engine=postgres",
+              "--datastore-conn-uri=postgres://postgres:postgres-f-dev-pw@f-postgres:5432/spicedb?sslmode=disable",
+              "--datastore-revision-quantization-interval=100ms", "--http-enabled=false"]
+    networks: [f-net]
+    mem_limit: 512m
+    depends_on:
+      f-spicedb-migrate: {condition: service_completed_successfully}
+
+  f-bootstrap:
+    profiles: [f]
+    build: ../../go
+    image: platform-spike-go:f
+    command: ["bootstrap"]
+    environment: &appenv
+      PORT: "8091"
+      DATABASE_URL: postgres://postgres:postgres-f-dev-pw@f-postgres:5432/app?sslmode=disable
+      IDP: logto
+      AUTHZ: spicedb
+      SPICEDB_ENDPOINT: f-spicedb:50051
+      SPICEDB_KEY: spicedb-f-dev-key
+      LOGTO_ENDPOINT: http://${STACK_F_HOST:-cs-ws.lab.alexluong.com}:8092
+      LOGTO_INTERNAL_URL: http://f-logto:3001
+      LOGTO_ADMIN_CLIENT_ID: psadminm2m
+      LOGTO_ADMIN_CLIENT_SECRET: logto-f-dev-admin-secret
+      API_RESOURCE: https://api.platform-spike.local
+      # Not localhost: cs-ws's dev proxy (Caddy, ports 3000-8999 except 8081-8089) rewrites
+      # "localhost" in redirects to cs.internal, which would break the driver's callback match.
+      DRIVER_REDIRECT_URI: http://127.0.0.1:3999/callback
+      STACK_CONFIG: /stack/stack.json
+      TEST_MODE: "1"
+      TEST_SECRET: ${TEST_SECRET:-test-secret}
+    volumes: [f-stack:/stack]
+    networks: [f-net]
+    depends_on:
+      f-postgres: {condition: service_healthy}
+      f-logto-seed: {condition: service_completed_successfully}
+      f-spicedb: {condition: service_started}
+
+  f-app:
+    profiles: [f]
+    image: platform-spike-go:f
+    command: ["server"]
+    environment: *appenv
+    ports: ["8091:8091"]
+    volumes: [f-stack:/stack:ro]
+    networks: [f-net]
+    mem_limit: 256m
+    restart: unless-stopped
+    depends_on:
+      f-bootstrap: {condition: service_completed_successfully}
+      f-logto-edge: {condition: service_started}
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8091/healthz"]
+      interval: 3s
+      timeout: 5s
+      retries: 40
+
+networks:
+  f-net: {}
+
+volumes:
+  f-pg: {}
+  f-stack: {}

@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/alexluong/platform-spike/go/internal/adapters/logto"
 	"github.com/alexluong/platform-spike/go/internal/adapters/openfga"
 	"github.com/alexluong/platform-spike/go/internal/adapters/ory"
 	"github.com/alexluong/platform-spike/go/internal/adapters/spicedb"
@@ -113,6 +114,23 @@ func run(log *slog.Logger) error {
 				Audience:       env("API_AUDIENCE", "platform-spike"),
 				ClientName:     "conformance-driver",
 				RedirectURI:    env("DRIVER_REDIRECT_URI", "http://localhost:3999/callback"),
+			})
+			return err
+		}); err != nil {
+			return err
+		}
+		out = cfg
+	case "logto":
+		var cfg logto.Config
+		if err := retry(log, "logto resource, driver app, sign-in experience", func() (err error) {
+			cfg, err = logto.Bootstrap(ctx, log, logto.BootstrapInput{
+				Endpoint:          env("LOGTO_ENDPOINT", "http://cs-ws.lab.alexluong.com:8092"),
+				InternalURL:       env("LOGTO_INTERNAL_URL", "http://logto:3001"),
+				AdminClientID:     env("LOGTO_ADMIN_CLIENT_ID", ""),
+				AdminClientSecret: env("LOGTO_ADMIN_CLIENT_SECRET", ""),
+				Resource:          env("API_RESOURCE", "https://api.platform-spike.local"),
+				ClientName:        "conformance-driver",
+				RedirectURI:       env("DRIVER_REDIRECT_URI", "http://localhost:3999/callback"),
 			})
 			return err
 		}); err != nil {

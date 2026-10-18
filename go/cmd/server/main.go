@@ -1,5 +1,6 @@
 // Command server is the composition root: config → adapters → modules, by hand.
 // Stack a: IDP=zitadel AUTHZ=spicedb. Stack b: IDP=ory AUTHZ=openfga.
+// Stack f: IDP=logto AUTHZ=spicedb.
 // Stack a2: IDP=zitadel-orgs AUTHZ=spicedb (an organization per merchant; the IdP is a
 // second outbox consumer).
 package main
@@ -15,6 +16,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/alexluong/platform-spike/go/internal/adapters/logto"
 	"github.com/alexluong/platform-spike/go/internal/adapters/openfga"
 	"github.com/alexluong/platform-spike/go/internal/adapters/ory"
 	"github.com/alexluong/platform-spike/go/internal/adapters/spicedb"
@@ -100,6 +102,12 @@ func run(log *slog.Logger) error {
 			return err
 		}
 		id = ory.New(ctx, cfg)
+	case "logto":
+		var cfg logto.Config
+		if err := readJSON(env("STACK_CONFIG", "/bootstrap/stack.json"), &cfg); err != nil {
+			return err
+		}
+		id = logto.New(ctx, cfg)
 	default:
 		return fmt.Errorf("unknown IDP %q", os.Getenv("IDP"))
 	}
