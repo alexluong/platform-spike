@@ -10,6 +10,8 @@ A mini Shopify, built three times on different identity + authorization stacks, 
 | `d` | TypeScript (from `c`) | Better Auth + organization plugin | Cerbos | 8086 |
 | `e` | TypeScript (same app as `d`, other authz adapter) | Better Auth + organization plugin | SpiceDB | 8087 |
 | `a2` | Go (from `a`) | Zitadel, one organization per merchant | SpiceDB | 8088 |
+| `i` | Go (from `a`) | Zitadel, one instance per merchant (round 4, §16) | SpiceDB | 8096 |
+| `h2` | Go (from `h`) | in-app issuer, one pool per merchant (round 4, §16) | SpiceDB | 8098 |
 
 Stacks `d`, `e` and `a2` are round 2 (§15): the identity provider owns the merchant's identity side.
 
@@ -423,7 +425,106 @@ Everything in §1–§11 still holds: **the full suite must pass** on `d`, `e` a
 - `d` → `e`: what changed outside the authz adapter and the composition root (anything else is a finding). `e` vs `a`: TS vs Go on the same engine.
 - `a2` vs `a`: what changed in modules (expected: merchant/member/agent lifecycle), and what Zitadel's organizations gave that Ory OSS can't.
 
-## 16. Changelog
+## 16. Round 4: multi-pool identity (`i`, `h2`)
+
+**Question.** Rounds 1–3 ran every identity provider with one user pool for everyone. The platform design (ctrl `docs/platform-architecture/identity-model.md`, 2026-10-19) needs **separate pools**: platform staff, platform accounts (merchant owners and partners), Shop buyers, and **one pool per merchant** holding that merchant's own staff and its customers. Does that model work end to end through one API, and which implementation carries it better?
+
+| stack | built from | identity | authz | ports |
+|---|---|---|---|---|
+| `i` | `a` | Zitadel, **one instance per merchant** on one deployment; instance picked by the app via the `x-zitadel-instance-host` header | SpiceDB | app 8096, Zitadel 8097 (only if the driver needs it) |
+| `h2` | `h` | in-app issuer (`zitadel/oidc` `op`), **pools as rows**, one issuer per pool | SpiceDB | app 8098 |
+
+Everything in §1–§11 still holds: **the full core suite must pass** on `i` and `h2`, plus the tests below. Compose profiles `i`, `h2`; projects `ps-i`, `ps-h2`.
+
+### 16.1 Pools
+
+| pool | who | core kind | `i` | `h2` |
+|---|---|---|---|---|
+| **workforce** | platform staff (`platform_admin`, `support`) | `platform` | instance `workforce` | pool `workforce` |
+| **platform** | platform accounts: merchant owners and partners (agencies, freelancers) | `user` | instance `platform`, org `accounts` | pool `platform` |
+| **shop** | Shop buyers: one account that buys at any merchant | `customer` | instance `platform`, org `shop` | pool `shop` |
+| **tenant** (one per merchant) | the merchant's own staff, and its customers | `user`, `customer` | instance per merchant, orgs `staff` and `customers` | one pool per merchant (staff and customers kept apart inside it) |
+
+- **Core mapping:** `POST /api/_test/users` with kind `platform` → workforce, `user` → platform, `customer` → shop. The core suite therefore runs unchanged.
+- **Every pool has its own issuer.** Workforce, platform and every tenant issuer differ (`shop` may share the platform issuer in `i`, as one instance). The app accepts a token only from a known issuer, and only for principals of that pool: a tenant token never acts at another merchant, a platform-pool token never acts as staff.
+- **The app picks the pool**, never the caller: from the token's issuer when verifying, and from a directory (merchant → pool/instance, issuer, status) when sending someone to log in. Client-supplied `x-zitadel-*` or other pool-selecting headers are ignored or stripped **(not tested; reviewer checks)**.
+- **Customers belong to the merchant** (all its stores), not to one store (decision 2026-10-19, ctrl identity-model.md; per-store pools remain an open alternative).
+- **Roles stay in the app** (§3 unchanged). The pool answers only "who is this". Tenant staff get permissions only through role assignments at their merchant, exactly like members.
+
+### 16.2 Changes to §2 for round-4 stacks
+
+- **A platform account may be a member of several merchants** (partners). Round-4 stacks drop "a user belongs to at most one merchant". `GET /api/me` for a `user` adds `merchantIds: string[]`; `merchantId` stays when there is exactly one.
+- **Tenant staff belong to exactly one merchant**, the one whose pool holds them. Adding a tenant staff user as a member of another merchant → 404 (suite: 400/403/404).
+- Membership and roles still come from the app DB, never from token claims (§2 unchanged).
+
+### 16.3 Merchant creation provisions the pool
+
+`POST /api/platform/merchants {name, ownerUserId}` (unchanged contract) now also creates the merchant's tenant pool (`i`: a Zitadel instance from a template with orgs `staff` and `customers`, the login client, the Shop upstream; `h2`: pool rows and keys). The owner stays a platform account (§16.1) and gets `owner` as today.
+- The response may be `201 {…, status: "active"}` (provisioned in the request) or `201 {…, status: "provisioning"}`, becoming `active` within 60 s (`GET /api/merchants/:mid` as the owner). The suite polls until `active` before using the tenant pool. While provisioning, tenant logins may fail; nothing else changes.
+- **No half-created merchants:** if provisioning fails, either the request fails and leaves nothing behind (no merchant row, no instance/pool), or the merchant stays `provisioning` and a retry completes it. Record which and the failure window (§16.7).
+- `GET /api/merchants/:mid/identity` (no auth) → `{issuer}`: the merchant's tenant issuer, what a storefront or admin UI would use to start a login. Unknown merchant → 404.
+
+### 16.4 Tenant users (test support and login)
+
+| method | path | body → response |
+|---|---|---|
+| POST | `/api/_test/merchants/:mid/users` | `{email, password, kind: "user" \| "customer"}` → `201 {id, email}`: creates the identity in the merchant's **tenant** pool and the app record. `user` = staff: a member of that merchant with no roles. `customer` = a customer of that merchant. |
+
+- Same email in two tenant pools, or in a tenant pool and the shop/platform pool → separate identities, separate ids, separate passwords. Never linked by email.
+- The real staff invitation flow (email, setup link) is out of scope; record what each stack would need (§16.7).
+
+Driver additions (`StackDriver`, optional, declared with `features: ['multi-pool']`):
+
+```ts
+/** Token from the merchant's tenant pool (staff or customers), through the stack's real login path. */
+loginTenant?(merchantId: string, kind: 'user' | 'customer', email: string, password: string): Promise<string>
+/** "Sign in with Shop": log in at the merchant's tenant customers pool with the Shop account as the upstream
+ *  OIDC provider; returns a token issued by the merchant's tenant pool. */
+loginWithShop?(merchantId: string, shopEmail: string, shopPassword: string): Promise<string>
+```
+
+Drivers follow §10: headless, real flows. For Shop, the driver drives both legs (the tenant pool redirects to the platform pool's authorize endpoint, the driver logs in there, the callback returns to the tenant pool, which issues the tenant token).
+
+### 16.5 Shop
+
+- A Shop buyer (core `customer`) can order at any merchant's store with a Shop token (core behaviour). The first such order creates that merchant's **customer record linked to the Shop account** (`shop_account_id`).
+- `loginWithShop` at merchant M returns a tenant-issued token for **the same** linked customer record (created on first sign-in if no order came first).
+- `GET /api/me/orders`:
+  - with the Shop token → the buyer's orders at every merchant (Shop's cross-merchant history), including those placed with a Shop-linked tenant token;
+  - with the Shop-linked tenant token at M → only M's orders of that linked customer.
+- A local tenant customer at M with the same email as the Shop account is **not** linked: its orders never show under the Shop account and vice versa.
+- `GET /api/me` with a Shop-linked tenant token → `{id, kind: "customer", shopLinked: true}`; local tenant customers → `shopLinked: false` (or absent).
+
+### 16.6 Rules the `multi-pool` tests check
+
+`conformance/tests/multi-pool.test.ts`, only when the driver declares `features: ['multi-pool']`. Statuses as in §9 (other merchant: 403 or 404, never 200).
+
+1. **Pools are separate issuers:** two merchants' `GET /identity` issuers differ from each other; tokens (when JWTs) carry the issuer of the pool they came from.
+2. **Tenant staff:** after the owner assigns them a role, they act with exactly that role's permissions at their merchant (store create, product create, `/api/me/permissions`); removing their membership cuts access on the next request; they can't act at another merchant even if its owner tries to add them (16.2); they can't call `/api/platform/*` (403).
+3. **Tenant customers:** order at their merchant's stores; ordering at another merchant's store → 403 (suite: 401/403); `GET /api/me/orders` shows only their own.
+4. **Same email, separate accounts:** the same email created in M1's and M2's tenant pools (different passwords) → each logs in only at its own merchant with its own password; different ids; M1's password fails at M2.
+5. **Cross-pool tokens:** a tenant token of M1 on M2's merchant or store endpoints → 403/404; a tenant staff token on a customer endpoint and a tenant customer token on staff endpoints → 403.
+6. **Partners:** one platform account made a member of M1 and M2, with different roles in each, acts per its role in each; `GET /api/me` lists both in `merchantIds`.
+7. **Shop:** §16.5 end to end: order at M1 with the Shop token; `loginWithShop` at M1 sees that order under `/api/me/orders` and places another; the Shop token's `/api/me/orders` shows both and an order at M2; the M1 tenant token never sees the M2 order; a local M1 customer with the Shop buyer's email sees none of them.
+8. **Suspension at the pool:** while M is suspended, its tenant staff and tenant customers can't log in (`loginTenant` and `loginWithShop` reject), tokens issued earlier get 403 `merchant_suspended` (staff) / 403 (customers); reinstating restores login. Platform accounts and other merchants' pools are unaffected.
+9. **Provisioning:** 10 merchants created in parallel all reach `active` within 60 s with distinct issuers and working tenant logins.
+
+### 16.7 Results to record (in addition to §12)
+
+- LOC: what the multi-pool model added vs the parent stack (`a` → `i`, `h` → `h2`), split into pool provisioning, issuer/directory resolution in the app, Shop federation, test support/driver.
+- **Provisioning cost:** time to create one merchant (p50/p95 over ≥100 merchants), what gets created per merchant, DB growth per merchant, the failure/compensation story and its window.
+- **Running cost at N merchants:** memory and CPU idle and under the suite with ~10 and with ~500 merchants (more if cheap); login latency per pool kind (p50/p95).
+- **Issuers and keys:** how the app finds and caches each pool's keys (JWKS per instance vs per-pool keys in one key ring), key rotation per pool, what a merchant moving cells would do to its issuer.
+- **Shop federation:** how it's wired (`i`: generic OIDC IdP on the tenant `customers` org pointing at the platform instance; `h2`: the tenant pool trusting the shop pool), account linking behaviour, and whether the one-link-per-org limit (Zitadel #9535) bit.
+- **What custom domains per merchant would take** (issuer on the store's domain): `i` via `x-zitadel-public-host`, `h2` via issuer config. Not built; say what's needed.
+- **Staff invitation flow:** what each stack would need for real (verified email, password/passkey setup link).
+- DX: what was hard, what docs were wrong, what an agent got wrong first.
+
+## 17. Changelog
+
+### v4 (2026-10-19): round 4
+
+- §16: stacks `i` (Zitadel instance per merchant) and `h2` (in-app issuer, pools as rows); pools, platform accounts in several merchants, tenant staff and customers, Shop sign-in and cross-merchant history, provisioning on merchant create, opt-in `multi-pool` tests.
 
 ### v3 (2026-10-13): round 2
 
