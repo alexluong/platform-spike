@@ -5,6 +5,16 @@
 -- https://default.logto.app/api). Idempotent. Runs after Logto has seeded its schema.
 -- psql variables: client_id, client_secret.
 \set ON_ERROR_STOP on
+-- Upgrade safety: this runs on every `up`. Once the client exists, touch nothing, so a
+-- later Logto release that renames or drops a column used below (e.g. the legacy
+-- applications.secret) can't break the start of an existing stack. Only a fresh install
+-- depends on the column list; if it fails there, it fails loudly (ON_ERROR_STOP) and the
+-- app's bootstrap never starts.
+SELECT EXISTS (SELECT 1 FROM applications WHERE tenant_id = 'default' AND id = :'client_id') AS seeded \gset
+\if :seeded
+  \echo 'logto-seed: client exists, nothing to do'
+  \quit
+\endif
 BEGIN;
 INSERT INTO applications (tenant_id, id, name, secret, description, type, oidc_client_metadata)
 VALUES ('default', :'client_id', 'platform-spike-admin', :'client_secret',

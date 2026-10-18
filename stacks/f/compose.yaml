@@ -82,6 +82,9 @@ services:
     profiles: [f]
     build: ./edge
     image: platform-spike-logto-edge:f
+    environment:
+      LOGTO_PUBLIC_HOST: ${STACK_F_HOST:-cs-ws.lab.alexluong.com}:8092
+      # The image's envsubst replaces only variables set in the environment: nginx's own $vars stay.
     ports: ["8092:8092"]
     networks: [f-net]
     mem_limit: 64m

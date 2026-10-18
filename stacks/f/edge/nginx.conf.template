@@ -2,6 +2,7 @@
 # Logto serves the OIDC endpoints, the sign-in experience and the Management API on
 # one port (3001). The Management API (/api/* apart from the experience API) stays
 # on the compose network; the admin console (3002) is not started at all.
+# Rendered by the nginx image's envsubst step (/etc/nginx/templates): ${LOGTO_PUBLIC_HOST}.
 server {
   listen 8092;
   # Docker's DNS, re-resolved every 10 s: f-logto has several replicas (round-robin), and
@@ -11,12 +12,17 @@ server {
   client_max_body_size 64k;
 
   proxy_http_version 1.1;
-  proxy_set_header Host $http_host;
+  # Fixed, not the client's Host: Logto (TRUST_PROXY_HEADER) builds the discovery document's
+  # endpoint URLs from Host / X-Forwarded-Host, so a client-chosen value was reflected there
+  # (review-f). The issuer comes from ENDPOINT either way.
+  proxy_set_header Host ${LOGTO_PUBLIC_HOST};
+  proxy_set_header X-Forwarded-Host ${LOGTO_PUBLIC_HOST};
   proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
   proxy_set_header X-Forwarded-Proto $scheme;
 
-  # Management API and everything else under /api: not from outside.
-  location /api/ { return 404; }
+  # Management API and everything else under /api (also /api itself): not from outside.
+  # Longest prefix wins, so the experience and .well-known locations below still match.
+  location /api { return 404; }
   # Sign-in experience API (password verification, identification, submit) and its public config.
   location = /api/experience { proxy_pass http://$logto:3001; }
   location /api/experience/ { proxy_pass http://$logto:3001; }

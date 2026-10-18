@@ -9,6 +9,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -49,7 +50,7 @@ type Client struct {
 func New(ctx context.Context, cfg Config) *Client {
 	hc := &http.Client{Timeout: 15 * time.Second}
 	// Keys from the internal URL; the issuer check uses the external one (what Logto puts in `iss`).
-	keys := oidc.NewRemoteKeySet(oidc.ClientContext(context.Background(), hc), cfg.InternalURL+"/oidc/jwks")
+	keys := newKeySet(oidc.ClientContext(context.Background(), hc), cfg.InternalURL+"/oidc/jwks", jwksMaxAge)
 	// go-oidc checks the signature (alg allowlist: Logto signs with ES384 by default, RS256 after
 	// a rotation to RSA), iss, exp and that aud contains the API resource. Verify adds the rest.
 	v := oidc.NewVerifier(cfg.issuer(), keys, &oidc.Config{ClientID: cfg.Resource, SupportedSigningAlgs: []string{oidc.ES384, oidc.RS256}})
@@ -159,11 +160,14 @@ func (c *Client) CreateClient(ctx context.Context, name, _ string) (identity.Cli
 	var secrets []struct {
 		Value string `json:"value"`
 	}
-	if err := c.api(ctx, "GET", "/api/applications/"+app.ID+"/secrets", nil, &secrets); err != nil {
-		return identity.Client{}, err
+	err := c.api(ctx, "GET", "/api/applications/"+app.ID+"/secrets", nil, &secrets)
+	if err == nil && len(secrets) == 0 {
+		err = fmt.Errorf("logto: application %s has no secret", app.ID)
 	}
-	if len(secrets) == 0 {
-		return identity.Client{}, fmt.Errorf("logto: application %s has no secret", app.ID)
+	if err != nil {
+		// Nobody will ever see this app's secret: delete it rather than leave a live client.
+		_ = c.api(context.WithoutCancel(ctx), "DELETE", "/api/applications/"+app.ID, nil, nil)
+		return identity.Client{}, err
 	}
 	// client_credentials tokens carry the app id as sub and client_id.
 	return identity.Client{Subject: app.ID, ClientID: app.ID, ClientSecret: secrets[0].Value}, nil
@@ -174,7 +178,19 @@ func (c *Client) api(ctx context.Context, method, path string, body, out any) er
 	if err != nil {
 		return err
 	}
-	return call(ctx, c.http, method, c.cfg.InternalURL+path, tok, body, out)
+	err = call(ctx, c.http, method, c.cfg.InternalURL+path, tok, body, out)
+	var ae *APIError
+	if errors.As(err, &ae) && ae.Status == http.StatusUnauthorized {
+		// The cached token was refused before its expiry (secret rotated, signing key rotated,
+		// Logto's DB reset): drop it and retry once with a fresh one instead of failing every
+		// Management API call until the cache runs out (up to an hour).
+		c.mgmt.reset(tok)
+		if tok, err = c.mgmt.token(ctx); err != nil {
+			return err
+		}
+		err = call(ctx, c.http, method, c.cfg.InternalURL+path, tok, body, out)
+	}
+	return err
 }
 
 // tokenSource caches the admin M2M app's Management API token until shortly before expiry.
@@ -187,6 +203,15 @@ type tokenSource struct {
 }
 
 func newTokenSource(hc *http.Client, cfg Config) *tokenSource { return &tokenSource{hc: hc, cfg: cfg} }
+
+// reset drops the cached token if it is still the one the caller saw refused.
+func (s *tokenSource) reset(refused string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.tok == refused {
+		s.tok = ""
+	}
+}
 
 func (s *tokenSource) token(ctx context.Context) (string, error) {
 	s.mu.Lock()
@@ -264,4 +289,37 @@ type APIError struct {
 
 func (e *APIError) Error() string {
 	return fmt.Sprintf("logto %s %s: %d %s", e.Method, e.URL, e.Status, e.Body)
+}
+
+// jwksMaxAge bounds how long a key deleted from Logto's JWKS keeps verifying tokens here.
+const jwksMaxAge = 5 * time.Minute
+
+// keySet is go-oidc's RemoteKeySet with a maximum age. RemoteKeySet re-fetches the JWKS only
+// when a token names a kid it hasn't cached, so a key deleted in Logto (rotation after a
+// leak) stayed trusted until the process restarted (review-f: a token signed with a deleted
+// key still got 200). A fresh RemoteKeySet after maxAge fetches the current JWKS on first use.
+type keySet struct {
+	ctx    context.Context
+	url    string
+	maxAge time.Duration
+	mu     sync.Mutex
+	ks     *oidc.RemoteKeySet
+	at     time.Time
+}
+
+func newKeySet(ctx context.Context, url string, maxAge time.Duration) *keySet {
+	return &keySet{ctx: ctx, url: url, maxAge: maxAge}
+}
+
+func (k *keySet) current() *oidc.RemoteKeySet {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	if k.ks == nil || time.Since(k.at) > k.maxAge {
+		k.ks, k.at = oidc.NewRemoteKeySet(k.ctx, k.url), time.Now()
+	}
+	return k.ks
+}
+
+func (k *keySet) VerifySignature(ctx context.Context, jwt string) ([]byte, error) {
+	return k.current().VerifySignature(ctx, jwt)
 }
