@@ -37,6 +37,23 @@ describe('OpenAuth issuer (unwrapped)', () => {
     expect(res.status).toBe(302)
     expect(res.headers.get('location')).toMatch(/^https:\/\/evil\.example\/cb\?error=unauthorized_client/)
   })
+
+  it('routes a percent-encoded path ("/%61uthorize") to /authorize: a gate must compare the decoded path', async () => {
+    const res = await rawIssuer(false).fetch(
+      new Request('http://app.internal/%61uthorize?client_id=x&response_type=code&redirect_uri=https://evil.example/cb'),
+    )
+    expect(res.status).toBe(302)
+    expect(res.headers.get('location')).toMatch(/^https:\/\/evil\.example\/cb/)
+  })
+
+  it('issues a refresh token with client_credentials, and refreshing needs no secret', async () => {
+    const iss = rawIssuer()
+    const form = (o: Record<string, string>) => ({ method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams(o) })
+    const cc = (await (await iss.fetch(new Request('http://app.internal/token', form({ grant_type: 'client_credentials', provider: 'client', client_id: 'c1', client_secret: 's' })))).json()) as { refresh_token: string }
+    expect(cc.refresh_token).toBeTruthy()
+    const r = await iss.fetch(new Request('http://app.internal/token', form({ grant_type: 'refresh_token', refresh_token: cc.refresh_token })))
+    expect(r.status).toBe(200)
+  })
 })
 
 describe('checkAuthorize (gate in front of /authorize)', () => {

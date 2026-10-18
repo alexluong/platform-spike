@@ -12,6 +12,7 @@ import { createClient } from '@openauthjs/openauth/client'
 import { issuer } from '@openauthjs/openauth/issuer'
 import { PasswordProvider, ScryptHasher } from '@openauthjs/openauth/provider/password'
 import type { Provider } from '@openauthjs/openauth/provider/provider'
+import { encryptionKeys, signingKeys } from '@openauthjs/openauth/keys'
 import { Storage } from '@openauthjs/openauth/storage/storage'
 import { createSubjects } from '@openauthjs/openauth/subject'
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto'
@@ -76,12 +77,21 @@ export async function makeOpenAuth(cfg: OpenAuthConfig, lookupUser: UserLookup) 
 
   const storage = PostgresStorage(pool)
   const hasher = ScryptHasher() // OpenAuth's default: scrypt N=16384 r=8 p=1
+  // The password provider skips the hash check when the email has no password, so a wrong
+  // password for a known email took ~40 ms and an unknown email ~9 ms (user enumeration by timing).
+  // On a failed login for an unknown email, `login` verifies against this dummy hash.
+  const dummyHash = await hasher.hash(randomBytes(16).toString('hex'))
 
   // The password provider wants a UI for login, register and change. Only login is reachable
   // (register/change are not mounted), and it answers JSON: no HTML pages are needed for a bearer API.
   const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } })
   const password = PasswordProvider({
-    login: async (_req, _form, error) => (error ? json(401, { error: error.type }) : json(200, { form: ['email', 'password'] })),
+    login: async (_req, form, error) => {
+      if (!error) return json(200, { form: ['email', 'password'] })
+      const email = form?.get('email')?.toString().toLowerCase()
+      if (email && !(await Storage.get(storage, ['email', email, 'password']))) await hasher.verify(form?.get('password')?.toString() ?? '', dummyHash)
+      return json(401, { error: error.type })
+    },
     register: async () => json(404, { error: 'registration_disabled' }),
     change: async () => json(404, { error: 'password_change_disabled' }),
     sendCode: async () => {
@@ -120,8 +130,7 @@ export async function makeOpenAuth(cfg: OpenAuthConfig, lookupUser: UserLookup) 
       }
       if (value.provider === 'client') {
         if (!value.ok) return json(401, { error: 'invalid_client' })
-        // Machines get no use from a refresh token (they hold their secret); OpenAuth always issues
-        // and stores one, so keep it short-lived.
+        // OpenAuth always issues and stores a refresh token; `handler` deletes it (dropClientRefresh).
         return ctx.subject('client', { clientId: value.clientId }, { subject: value.clientId, ttl: { refresh: 60 } })
       }
       return json(400, { error: 'unsupported_provider' })
@@ -134,15 +143,44 @@ export async function makeOpenAuth(cfg: OpenAuthConfig, lookupUser: UserLookup) 
   const base = new URL(cfg.baseUrl)
   async function handler(req: Request): Promise<Response> {
     const u = new URL(req.url)
-    if (u.pathname === '/authorize') {
+    // Hono's routers (the app's and the issuer's) match the decodeURI'd path: "/%61uthorize" reached
+    // the issuer's /authorize past a gate that compared the raw path. Gate and forward the decoded path.
+    let path: string
+    try {
+      path = decodeURI(u.pathname)
+    } catch {
+      return json(400, { error: 'invalid_request' })
+    }
+    if (path === '/authorize') {
       const bad = checkAuthorize(u.searchParams, cfg)
       if (bad) return json(400, { error: 'invalid_request', error_description: bad })
     }
-    const url = new URL(u.pathname + u.search, base)
+    const url = new URL(base.origin)
+    url.pathname = path
+    url.search = u.search
     const headers = new Headers(req.headers)
     for (const h of ['x-forwarded-host', 'x-forwarded-proto', 'x-forwarded-port', 'host']) headers.delete(h)
     const body = req.method === 'GET' || req.method === 'HEAD' ? undefined : await req.arrayBuffer()
-    return issuerApp.fetch(new Request(url, { method: req.method, headers, body, redirect: 'manual' }))
+    const res = await issuerApp.fetch(new Request(url, { method: req.method, headers, body, redirect: 'manual' }))
+    if (path === '/token' && body && res.ok) return dropClientRefresh(body, res)
+    return res
+  }
+
+  /** OpenAuth issues a refresh token with every client_credentials token, and its refresh grant
+   *  re-checks neither the secret nor the client: each refresh returns a new refresh token, so a
+   *  holder kept getting tokens forever, after the secret changed or the client was deleted.
+   *  Machines hold their secret; delete the stored refresh token and don't hand it out. */
+  async function dropClientRefresh(body: ArrayBuffer, res: Response): Promise<Response> {
+    const form = new URLSearchParams(new TextDecoder().decode(body))
+    if (form.get('grant_type') !== 'client_credentials') return res
+    const { refresh_token, ...rest } = (await res.json()) as { refresh_token?: string }
+    if (refresh_token) {
+      const i = refresh_token.lastIndexOf(':')
+      await Storage.remove(storage, ['oauth:refresh', refresh_token.slice(0, i), refresh_token.slice(i + 1)])
+    }
+    const headers = new Headers(res.headers)
+    headers.delete('content-length')
+    return new Response(JSON.stringify(rest), { status: 200, headers })
   }
 
   // Verification uses OpenAuth's own client. Its JWKS fetch goes to the issuer in-process (no
@@ -154,7 +192,19 @@ export async function makeOpenAuth(cfg: OpenAuthConfig, lookupUser: UserLookup) 
     fetch: (input, init) => handler(new Request(input, init)),
   })
 
-  // Generate the signing and encryption keys now, not inside the first parallel burst of logins.
+  // Generate the signing and encryption keys now, under a lock. Each instance caches its key list for
+  // the life of the process (issuer and verifier), and the client lib never refetches the JWKS on an
+  // unknown kid. Two instances creating keys at once could each keep only its own: tokens (and the
+  // encrypted `authorization` cookie) from one would then fail on the other until restart.
+  const lock = await pool.connect()
+  try {
+    await lock.query(`select pg_advisory_lock(hashtext('openauth_keys'))`)
+    await signingKeys(storage)
+    await encryptionKeys(storage)
+  } finally {
+    await lock.query(`select pg_advisory_unlock(hashtext('openauth_keys'))`).catch(() => {})
+    lock.release()
+  }
   await handler(new Request(`${issuerUrl}/.well-known/jwks.json`))
 
   return {
