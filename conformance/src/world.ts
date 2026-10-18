@@ -319,8 +319,11 @@ export async function newTenantUser(
 export async function tenantIssuer(merchantId: string): Promise<string> {
   const body = ok(await anon.get<Identity>(`/api/merchants/${merchantId}/identity`), 200)
   if (typeof body?.issuer !== 'string' || body.issuer.length === 0) throw new Error(`GET /api/merchants/${merchantId}/identity: no issuer in ${JSON.stringify(body)}`)
-  return body.issuer
+  return normIssuer(body.issuer)
 }
+
+/** Issuers compare without a trailing slash (`https://x/` and `https://x` are the same issuer). */
+export const normIssuer = (iss: string) => iss.replace(/\/+$/, '')
 
 /**
  * Poll `GET /api/merchants/:mid` as the owner until `status: "active"` (SPEC §16.3: within 60 s).
@@ -345,13 +348,13 @@ export async function newActiveMerchant(): Promise<MerchantWorld> {
   return m
 }
 
-/** The `iss` claim when `token` is a JWT; `undefined` for opaque tokens. Not verified. */
+/** The `iss` claim (normalized) when `token` is a JWT; `undefined` for opaque tokens. Not verified. */
 export function jwtIssuer(token: string): string | undefined {
   const parts = token.split('.')
   if (parts.length !== 3) return undefined
   try {
     const payload = JSON.parse(Buffer.from(parts[1]!, 'base64url').toString('utf8')) as { iss?: unknown }
-    return typeof payload.iss === 'string' ? payload.iss : undefined
+    return typeof payload.iss === 'string' ? normIssuer(payload.iss) : undefined
   } catch {
     return undefined
   }

@@ -1,6 +1,6 @@
 # Conformance suite
 
-Black-box tests for `spec/SPEC.md`. The same suite runs unchanged against stacks `a`, `b`, `c` and the round-2 stacks `d`, `e`, `a2` (SPEC §15); passing it is the definition of done for a stack. TypeScript + vitest, HTTP only.
+Black-box tests for `spec/SPEC.md`. The same suite runs unchanged against stacks `a`, `b`, `c`, the round-2 stacks `d`, `e`, `a2` (SPEC §15), the round-3 stacks `f`, `g`, `h` and the round-4 stacks `i`, `h2` (SPEC §16); passing it is the definition of done for a stack. TypeScript + vitest, HTTP only.
 
 ## Run
 
@@ -13,10 +13,10 @@ pnpm typecheck                    # tsc --noEmit
 
 | env | default | meaning |
 |---|---|---|
-| `STACK` | (required) | `a`, `b`, `c`, `d`, `e` or `a2`: picks `stacks/<stack>.ts` |
+| `STACK` | (required) | `a`, `b`, `c`, `d`, `e`, `a2`, `f`, `g`, `h`, `i` or `h2`: picks `stacks/<stack>.ts` |
 | `HOST` | `localhost` | host where the stack's ports are published |
 | `TEST_SECRET` | `test-secret` | sent as `X-Test-Secret` to `/api/_test/users` |
-| `APP_URL` | `http://$HOST:<port>` | override the app base URL (ports: a 8081, b 8082, c 8083, d 8086, e 8087, a2 8088; a2's Zitadel 8089) |
+| `APP_URL` | `http://$HOST:<port>` | override the app base URL (ports: a 8081, b 8082, c 8083, d 8086, e 8087, a2 8088; a2's Zitadel 8089; h 8094, i 8096 (its Zitadel 8097), h2 8098) |
 | `SKIP_SLOW` | unset | `1` skips the break-glass expiry test (waits ~65s) |
 | `SKIP_PREFLIGHT` | unset | `1` skips the preflight (stub driver / `/healthz` check) |
 | `REQUEST_TIMEOUT_MS` | `15000` | per-request timeout |
@@ -38,10 +38,15 @@ interface StackDriver {
   loginUser(email: string, password: string): Promise<string>         // bearer token for /api
   loginClient(clientId: string, clientSecret: string): Promise<string> // apps and agents
   features?: string[]                                                  // opt-in test groups
+  // SPEC §16.4, `multi-pool` stacks only:
+  loginTenant?(merchantId: string, kind: 'user' | 'customer', email: string, password: string): Promise<string>
+  loginWithShop?(merchantId: string, shopEmail: string, shopPassword: string): Promise<string>
 }
 ```
 
 `features: ['idp-tenancy']` (stacks `d`, `e`, `a2`) turns on `tests/idp-tenancy.test.ts`; without it that file is skipped. The `d`/`e` drivers start as copies of `c`, `a2` as a copy of `a` (ports changed); each builder adapts them to the stack's real login path. On these stacks `loginUser`/`loginClient` must reject when the IdP refuses a suspended merchant's people (SPEC §15.3).
+
+`features: ['multi-pool']` (stacks `i`, `h2`) turns on `tests/multi-pool.test.ts` and requires `loginTenant` and `loginWithShop` (SPEC §16.4); the preflight checks they aren't stubs. `loginUser` logs into the pool of the `/api/_test/users` kind (`platform` → workforce, `user` → platform, `customer` → shop); `loginTenant` into the merchant's tenant pool (staff or customers); `loginWithShop` drives both legs of "Sign in with Shop" and returns the tenant-issued token. All three reject while the pool refuses (suspended merchant, wrong pool, wrong password). The `i`/`h2` files start as stubs naming what to build.
 
 - Use the stack's **real** headless login path (the TODO in each stub names it). No shortcuts through the app.
 - Add any IdP URLs the driver needs as exported constants with env overrides and defaults matching the ports the stack's compose file publishes (placeholders are in the stubs; fix them).
@@ -59,12 +64,13 @@ src/env.ts           env vars
 src/client.ts        fetch client (Api.as(token)), assertions: ok, expectStatus, expectError,
                      expectDenied (403; 403|404 with crossTenant), expectConflict, expectUnauthenticated
 src/world.ts         fixtures through the real API: newUser/newCustomer/newSupport/platformAdmin,
+                     multi-pool: newTenantUser, loginTenant, loginWithShop, waitActive, tenantIssuer, jwtIssuer,
                      newMerchant → MerchantWorld (store, member, role, assign, memberWithRole,
                      memberWithPerms, product, order, paidOrder, ship, suspend, ...), apps, agents, break-glass
 src/catalog.ts       SPEC §3/§4 as data (system roles, store/merchant-scope actions)
 src/types.ts         response shapes
 src/global-setup.ts  preflight
-stacks/<stack>.ts    drivers: a, b, c; d, e, a2 (round 2, starting points)
+stacks/<stack>.ts    drivers: a, b, c; d, e, a2 (round 2); f, g, h (round 3); i, h2 (round 4, stubs)
 tests/*.test.ts      the suite
 AMBIGUITIES.md       spec readings the suite encodes where SPEC.md is unclear
 ```
@@ -84,6 +90,7 @@ AMBIGUITIES.md       spec readings the suite encodes where SPEC.md is unclear
 | `apps.test.ts` | 21 | register (platform_admin only); each forbidden scope → `not_grantable_to_apps`; install with scopes ⊆ requested; installer must hold scopes at that store (`escalation`); app token does exactly its scopes on its store, nothing on other stores or merchant actions; `/api/me/permissions`; uninstall cuts access; one app on two merchants; `scope_not_requested`; unknown `appId` → 404 |
 | `agents.test.ts` | 20 | register (merchant users only); grant subset of own permissions (`escalation` otherwise); store-bound; `/api/me/permissions`; revoke; expiry (2s grant, waits 3.5s); independent grants per store; granting user's role removal / permission removal / membership removal cuts the agent off; refunds use the granting user's limit, live; `not_grantable` before the registrant rule |
 | `idp-tenancy.test.ts` | 28 | `idp-tenancy` stacks only (SPEC §15.2, §15.3): invitations create/list/cancel, `member.manage` required, other merchants 403\|404, invitee not a member until accept (assign 4xx, no `merchantId`), accept (case-insensitive email, no roles, then roles per §3), wrong user 403\|404, cancelled/accepted 404\|409, already a member 409, 401 without token; suspension: users and agents can't log in, earlier tokens 403 `merchant_suspended`, reinstate restores login, platform staff/customers/apps/other merchants unaffected |
+| `multi-pool.test.ts` | 39 | `multi-pool` stacks only (SPEC §16.6 rules 1–9): distinct tenant issuers (`/identity`, token `iss`); tenant staff with exactly their role, removal, never at another merchant, no `/api/platform/*`; tenant customers at their merchant's stores only, own orders; same email in two pools = two accounts; cross-pool tokens 403\|404; partners in two merchants (`merchantIds`); Shop orders, Sign in with Shop, cross-merchant history, unlinked local customer; suspension at the pool (logins reject, old tokens 403, reinstate, others unaffected); provisioning (`active` ≤ 60 s, 10 in parallel) |
 | `permissions.test.ts` | 11 | exact `/api/me/permissions` sets for a custom role at store vs merchant scope (both query forms), union, live edit, customer and platform admin get `[]`, missing query → 400 |
 
-Total: 362 on every stack, plus 28 on `idp-tenancy` stacks.
+Total: 362 on every stack, plus 28 on `idp-tenancy` stacks and 39 on `multi-pool` stacks.

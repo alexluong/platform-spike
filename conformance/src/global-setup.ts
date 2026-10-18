@@ -24,6 +24,26 @@ export default async function setup(): Promise<void> {
     clearTimeout(timer)
   }
 
+  // 1b. SPEC §16.4: a `multi-pool` driver must implement the tenant and Shop logins too.
+  if (driver.features?.includes('multi-pool')) {
+    for (const [name, probe] of [
+      ['loginTenant', () => driver.loginTenant?.('conformance-probe', 'user', 'conformance-probe@example.com', 'not-a-real-password')],
+      ['loginWithShop', () => driver.loginWithShop?.('conformance-probe', 'conformance-probe@example.com', 'not-a-real-password')],
+    ] as const) {
+      if (!driver[name]) {
+        problems.push(`driver declares multi-pool but has no ${name} (SPEC §16.4)`)
+        continue
+      }
+      try {
+        await Promise.race([probe(), new Promise((r) => (timer = setTimeout(r, 5_000)))])
+      } catch (e) {
+        if (e instanceof DriverNotImplementedError) problems.push(e.message)
+      } finally {
+        clearTimeout(timer)
+      }
+    }
+  }
+
   // 2. Stack healthy?
   const url = `${driver.baseUrl.replace(/\/$/, '')}/healthz`
   try {
