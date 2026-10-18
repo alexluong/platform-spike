@@ -1,0 +1,24 @@
+# probe-settings 2026-10-18T19:49:44.195Z
+B=sb-mve8otqb.idp.internal C=sc-mve8otqb.idp.internal
+
+SMTP: POST /admin/v1/smtp on B: 200 id=395702362825584643
+  activate: 200
+  B smtp configs: merchant-b:SMTP_CONFIG_ACTIVE   C smtp configs: (none)
+
+SMS: POST /admin/v1/sms/twilio on B: 200 id=395702363077242883
+  B sms providers: merchant-b sms:SMS_PROVIDER_CONFIG_INACTIVE   C sms providers: (none)
+
+Actions v2: POST /v2/actions/targets on B: 200 id=395702363278569475
+  PUT /v2/actions/executions (event user.human.added → target) on B: 200 
+  B targets: merchant-b-hook executions: 1   C targets: (none) executions: 0
+
+Branding: PUT /admin/v1/policies/label on B: 200 
+  activate: 200
+  GET /v2/settings/branding: B primary=#ff0066   C primary=#5469d4
+
+Login policy: PUT /admin/v1/policies/login {forceMfa:true} on B: 200 
+  GET /v2/settings/login forceMfa: B true   C undefined
+  password-only login at B: token issued; id_token amr=["pwd"]
+  password-only login at C: token issued; id_token amr=["pwd"]
+
+done

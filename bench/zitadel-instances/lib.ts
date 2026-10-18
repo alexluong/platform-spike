@@ -3,6 +3,7 @@
 // Env: ZBENCH_URL (default http://cs-ws.lab.alexluong.com:8099) = where requests go (TCP);
 //      ZBENCH_AUD   = audience for System API JWTs (default = ZBENCH_URL; must be the default instance's issuer).
 import { createHash, createSign, randomBytes } from 'node:crypto'
+import { execFileSync } from 'node:child_process'
 import { readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -306,3 +307,30 @@ export async function login(inst: Instance, cfg: LoginCfg, opts: { pub?: string;
     ms: { authorize: a.ms, session: s.ms, finalize: f.ms, token: t.ms, total: performance.now() - t0 },
   }
 }
+
+/** Run SQL in the bench Postgres (ssh to the docker host; container ps-zbench-zb-postgres-1). */
+export function psql(sql: string): string {
+  return execFileSync('ssh', [process.env.ZBENCH_SSH ?? 'cs-ws', 'docker exec -i ps-zbench-zb-postgres-1 psql -U postgres -d zitadel -At -F "|" -v ON_ERROR_STOP=1'], {
+    input: sql,
+    encoding: 'utf8',
+    maxBuffer: 64 << 20,
+  }).trim()
+}
+
+/** Docker host shell command (e.g. docker stats). */
+export function host(cmd: string): string {
+  return execFileSync('ssh', [process.env.ZBENCH_SSH ?? 'cs-ws', cmd], { encoding: 'utf8', maxBuffer: 16 << 20 }).trim()
+}
+
+/** SQL: rows per table for one instance id, over every table with an instance_id column. */
+export const ROWS_FN = `
+CREATE OR REPLACE FUNCTION public.zb_instance_rows(iid text) RETURNS TABLE(tbl text, n bigint) LANGUAGE plpgsql AS $$
+DECLARE r record;
+BEGIN
+  FOR r IN SELECT c.table_schema s, c.table_name t FROM information_schema.columns c
+           JOIN information_schema.tables x ON x.table_schema=c.table_schema AND x.table_name=c.table_name AND x.table_type='BASE TABLE'
+           WHERE c.column_name='instance_id' LOOP
+    EXECUTE format('SELECT count(*) FROM %I.%I WHERE instance_id::text = $1', r.s, r.t) INTO n USING iid;
+    IF n > 0 THEN tbl := r.s||'.'||r.t; RETURN NEXT; END IF;
+  END LOOP;
+END $$;`

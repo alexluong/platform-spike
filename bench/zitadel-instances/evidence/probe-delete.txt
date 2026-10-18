@@ -1,0 +1,12 @@
+# probe-delete 2026-10-18T19:50:17.864Z
+instance 395702414230974467: 1516 rows in 44 tables; top: eventstore.events2=679 eventstore.fields=496 projections.custom_texts2=72 eventstore.unique_constraints=45 projections.current_states=36 projections.users14=22
+DELETE /system/v1/instances/{id}: 200 in 28ms {"details":{"sequence":"6", "creationDate":"2026-10-18T19:50:23.890010Z", "resourceOwner":"395702414230974467"}}
+discovery right after: 404 unable to set instance using origin &{pd-mve8pjpk.idp.internal  http} (ExternalDomain is cs-ws.lab.a
+System API search by id after delete: totalResult=0
++0s: 756 rows in 5 tables; top: eventstore.events2=681 projections.current_states=64 projections.milestones3=6 projections.instance_features5=3 projections.web_keys1=2
++5s: 756 rows in 5 tables; top: eventstore.events2=681 projections.current_states=64 projections.milestones3=6 projections.instance_features5=3 projections.web_keys1=2
++30s: 759 rows in 5 tables; top: eventstore.events2=681 projections.current_states=67 projections.milestones3=6 projections.instance_features5=3 projections.web_keys1=2
++90s: 759 rows in 5 tables; top: eventstore.events2=681 projections.current_states=67 projections.milestones3=6 projections.instance_features5=3 projections.web_keys1=2
+re-create an instance with the deleted instance's domain: 200 ok
+
+done
