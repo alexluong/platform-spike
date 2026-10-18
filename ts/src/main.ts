@@ -64,6 +64,7 @@ const db = makeDb(pool)
 // Identity adapter (migrates its own tables), then the app's migrations.
 async function makeIdentity() {
   if (config.IDENTITY === 'openauth') {
+    const authDb = makeDb(authPool)
     return makeOpenAuth(
       {
         pool: authPool,
@@ -74,7 +75,7 @@ async function makeIdentity() {
         accessTtlSeconds: config.AUTH_ACCESS_TTL,
         refreshTtlSeconds: config.AUTH_REFRESH_TTL,
       },
-      async (email) => (await makeDb(authPool).select({ id: appUsers.id }).from(appUsers).where(eq(appUsers.email, email)))[0],
+      async (email) => (await authDb.select({ id: appUsers.id }).from(appUsers).where(eq(appUsers.email, email)))[0],
     )
   }
   if (!config.AUTH_SECRET) throw new Error('AUTH_SECRET (32+ chars) is required for Better Auth')
