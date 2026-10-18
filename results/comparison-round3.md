@@ -40,3 +40,16 @@ Question: as the identity provider in its login-only role (tenancy, roles and me
 - f: idempotent user create; per-stack generated admin client secret.
 - g: none (not pursued).
 - cs-ws dev proxy: extend the redirect-rewrite exemption to 8090–8099 (collielab) so f/g run without the 127.0.0.1 workaround.
+
+## Addendum (2026-10-19): stack h, Go + in-process issuer (`zitadel/oidc`) + SpiceDB
+
+Details: `h.md`, `review-h.md`. Stack a with Zitadel replaced by an issuer inside the app, on `zitadel/oidc` v3.51.16 `pkg/op` (OpenID Certified); users, codes, refresh tokens, signing keys and machine clients in the app's Postgres.
+
+- **Suite:** 362/362 after review, also with two app instances on one DB.
+- **Owned code:** issuer adapter ~930 LOC + 49 SQL + ~100 wiring, 588 LOC tests (Zitadel adapter 265, Better Auth 113, OpenAuth 182). Replaces a whole IdP server, its sync and its outbox.
+- **Transactions:** identity writes join the request's transaction (tx in `ctx`, one executor line, no module changes). A rolled-back request leaves no identity; the IdP outbox and eventual-consistency retries are gone.
+- **Ops:** ~80 ms CPU per user create + login at a real argon2id cost (a ~100 ms with dev hash cost, f ~650 ms); ~150 MiB idle; 15 s cold start; key rotation and retirement without restart.
+- **The library does the protocol, we own the rules:** of a 20-item security checklist from reviews f/g, the library fully covers 3. Its defaults to override: accepts plain/no PKCE, read-then-delete code redemption (not single-use under parallel requests), access and ID tokens with the same `typ` and audience, open CORS, JWT-bearer grant always on.
+- **Review's worst finding (high, fixed):** the library's `/authorize/callback?id=` handed the code to anyone holding the auth request id: an attacker could start a login, send the victim the link and redeem the victim's code with his own PKCE verifier. Plus rate-limit races and a client lockout DoS (fixed). Open: limits act globally behind one proxy address (needs trusted-proxy config and a shared store), 15-min access tokens not revocable.
+- **Not in the library:** MFA, passkeys, SAML/SSO federation, resource indicators (RFC 8707), dynamic client registration / CIMD, DPoP.
+- **Verdict (builder and reviewer):** the best Go option for login + machine clients, **if** the team owns the auth surface, including reviewing the library's flows as deployed whenever the login step or library version changes (three of four serious findings sat between the library and our code). Pick Zitadel if MFA, passkeys or merchant SSO are near.
