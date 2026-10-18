@@ -50,3 +50,25 @@ type Provisioner interface {
 	// An adapter that shares the app's DB does it in the caller's transaction (ctx).
 	DeleteClient(ctx context.Context, clientID string) error
 }
+
+// ErrNotFound: the adapter has no such merchant, user or pool.
+var ErrNotFound = errors.New("identity: not found")
+
+// TenantPools is implemented by identity adapters with one user pool per merchant (SPEC §16,
+// stack h2). Writes join the caller's transaction when the adapter shares the app's DB (ctx).
+type TenantPools interface {
+	// ProvisionMerchant creates the merchant's tenant pool (issuer, keys, Shop upstream).
+	ProvisionMerchant(ctx context.Context, merchantID string) error
+	// SetMerchantSuspended makes the merchant's pool refuse (or accept again) logins.
+	SetMerchantSuspended(ctx context.Context, merchantID string, suspended bool) error
+	// MerchantIssuer is the tenant pool's issuer (where a storefront or admin UI starts a login).
+	MerchantIssuer(ctx context.Context, merchantID string) (string, error)
+	// CreateTenantUser creates a password identity in the merchant's pool: kind user = its staff,
+	// customer = its customers. Returns the subject its tokens map to.
+	CreateTenantUser(ctx context.Context, merchantID, email, password, kind string) (subject string, err error)
+}
+
+// ShopLinker is the app's hook for "Sign in with Shop" (SPEC §16.5): after a Shop account
+// (shopSubject) signs in at a merchant, link the merchant's customer record to the tenant
+// identity (tenantSubject). Called by the adapter inside its transaction (ctx carries it).
+type ShopLinker func(ctx context.Context, merchantID, shopSubject, tenantSubject string) error
