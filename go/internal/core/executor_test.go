@@ -56,7 +56,7 @@ func (f *fakeAuthz) EvaluateMany(ctx context.Context, rs []authz.Request) ([]aut
 }
 
 func TestCanPrechecks(t *testing.T) {
-	user := &Principal{ID: "u1", Kind: perm.KindUser, MerchantID: "m1"}
+	user := &Principal{ID: "u1", Kind: perm.KindUser, MerchantID: "m1", MerchantIDs: []string{"m1"}}
 	app := &Principal{ID: "a1", Kind: perm.KindApp}
 	staff := &Principal{ID: "s1", Kind: perm.KindPlatform, PlatformRole: "support"}
 	cust := &Principal{ID: "c1", Kind: perm.KindCustomer}
@@ -122,7 +122,7 @@ func TestDenialCodes(t *testing.T) {
 func TestHoldsAllRefundContext(t *testing.T) {
 	fa := &fakeAuthz{allow: map[string]bool{"order.view": true, "order.refund": true}}
 	e := &Executor{Authz: fa}
-	r := &Req{P: &Principal{ID: "u1", Kind: perm.KindUser, MerchantID: "m1"}, exec: e, Tx: nil}
+	r := &Req{P: &Principal{ID: "u1", Kind: perm.KindUser, MerchantID: "m1", MerchantIDs: []string{"m1"}}, exec: e, Tx: nil}
 	// Req.CanMany uses r.Tx as the querier; give it one through a tiny wrapper.
 	ok, err := e.CanMany(context.Background(), fakeQ{status: "active"}, r.P, []Check{
 		{Action: "order.view", Target: StoreTarget("s1", "m1", nil), Context: RefundContext("order.view", 500)},

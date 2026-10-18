@@ -181,12 +181,13 @@ func (s *Issuer) fedCallback(w http.ResponseWriter, r *http.Request) {
 		fedError(w, 400, "missing_binding")
 		return
 	}
+	// Claimed once, and only with the cookie of the user agent that started it (a wrong cookie
+	// doesn't burn the state).
 	var authReq, verifier, nonce string
-	var bh []byte
-	err = s.db.QueryRow(ctx, `UPDATE idp_federation_states SET used=true WHERE id=$1 AND pool_id=$2 AND NOT used AND expires_at > now()
-		RETURNING auth_request_id, verifier, nonce, binding_hash`, sha256Hex(q.Get("state")), p.ID).Scan(&authReq, &verifier, &nonce, &bh)
-	got := sha256.Sum256([]byte(cookie.Value))
-	if err != nil || subtle.ConstantTimeCompare(got[:], bh) != 1 {
+	bh := sha256.Sum256([]byte(cookie.Value))
+	err = s.db.QueryRow(ctx, `UPDATE idp_federation_states SET used=true WHERE id=$1 AND pool_id=$2 AND binding_hash=$3 AND NOT used AND expires_at > now()
+		RETURNING auth_request_id, verifier, nonce`, sha256Hex(q.Get("state")), p.ID, bh[:]).Scan(&authReq, &verifier, &nonce)
+	if err != nil {
 		fedError(w, 400, "invalid_state")
 		return
 	}
