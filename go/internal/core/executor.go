@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/alexluong/platform-spike/go/internal/authz"
+	"github.com/alexluong/platform-spike/go/internal/db"
 	"github.com/alexluong/platform-spike/go/internal/perm"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -350,7 +351,9 @@ func (e *Executor) run(ctx context.Context, op Op, hr *http.Request) (any, error
 		}
 	}
 
-	out, err := op.Run(ctx, r)
+	// The tx also rides in ctx, so an identity adapter that shares the app's DB (stack h)
+	// writes users and clients in it; adapters for external IdPs ignore it.
+	out, err := op.Run(db.WithTx(ctx, tx), r)
 	if err != nil {
 		return nil, err
 	}

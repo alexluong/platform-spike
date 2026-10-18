@@ -9,3 +9,4 @@ include:
   - stacks/a2/compose.yaml
   - stacks/f/compose.yaml
   - stacks/g/compose.yaml
+  - stacks/h/compose.yaml

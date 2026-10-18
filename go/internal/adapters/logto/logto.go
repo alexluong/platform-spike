@@ -323,3 +323,6 @@ func (k *keySet) current() *oidc.RemoteKeySet {
 func (k *keySet) VerifySignature(ctx context.Context, jwt string) ([]byte, error) {
 	return k.current().VerifySignature(ctx, jwt)
 }
+
+// DeleteClient is not wired for this IdP yet (identity port, stack h): returns ErrNotSupported.
+func (c *Client) DeleteClient(context.Context, string) error { return identity.ErrNotSupported }

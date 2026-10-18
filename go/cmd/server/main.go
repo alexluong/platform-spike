@@ -1,6 +1,7 @@
 // Command server is the composition root: config → adapters → modules, by hand.
 // Stack a: IDP=zitadel AUTHZ=spicedb. Stack b: IDP=ory AUTHZ=openfga.
 // Stack f: IDP=logto AUTHZ=spicedb.
+// Stack h: IDP=oidcop AUTHZ=spicedb (the OpenID provider runs inside this server, on the app DB).
 // Stack a2: IDP=zitadel-orgs AUTHZ=spicedb (an organization per merchant; the IdP is a
 // second outbox consumer).
 package main
@@ -13,10 +14,12 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
 	"github.com/alexluong/platform-spike/go/internal/adapters/logto"
+	"github.com/alexluong/platform-spike/go/internal/adapters/oidcop"
 	"github.com/alexluong/platform-spike/go/internal/adapters/openfga"
 	"github.com/alexluong/platform-spike/go/internal/adapters/ory"
 	"github.com/alexluong/platform-spike/go/internal/adapters/spicedb"
@@ -108,6 +111,14 @@ func run(log *slog.Logger) error {
 			return err
 		}
 		id = logto.New(ctx, cfg)
+	case "oidcop":
+		cfg, err := oidcopConfig()
+		if err != nil {
+			return err
+		}
+		if id, err = oidcop.New(ctx, pool, cfg, log); err != nil {
+			return err
+		}
 	default:
 		return fmt.Errorf("unknown IDP %q", os.Getenv("IDP"))
 	}
@@ -165,6 +176,9 @@ func run(log *slog.Logger) error {
 
 	mux := http.NewServeMux()
 	reg.Mount(mux, exec)
+	if m, ok := id.(interface{ Mount(*http.ServeMux) }); ok {
+		m.Mount(mux) // an in-app issuer serves its endpoints on the app's port
+	}
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
 		ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
 		defer cancel()
@@ -214,6 +228,26 @@ func enqueueSystemRoles(ctx context.Context, pool *pgxpool.Pool, relay *outbox.R
 		time.Sleep(time.Second)
 	}
 	return fmt.Errorf("sync system roles: %w", err)
+}
+
+// oidcopConfig: stack h's issuer, from env. PUBLIC_URL is the name clients use; the issuer
+// is pinned to it (never derived from Host / X-Forwarded-*).
+func oidcopConfig() (oidcop.Config, error) {
+	public := strings.TrimSuffix(env("PUBLIC_URL", "http://cs-ws.lab.alexluong.com:8094"), "/")
+	access, err := time.ParseDuration(env("ACCESS_TOKEN_TTL", "15m"))
+	if err != nil {
+		return oidcop.Config{}, err
+	}
+	refresh, err := time.ParseDuration(env("REFRESH_TOKEN_TTL", "24h"))
+	if err != nil {
+		return oidcop.Config{}, err
+	}
+	return oidcop.Config{
+		Issuer: public + "/oidc", LoginURL: public + "/login", Secret: os.Getenv("ISSUER_SECRET"),
+		Audience: env("API_AUDIENCE", "platform-api"), LoginClientID: env("LOGIN_CLIENT_ID", "platform-cli"),
+		RedirectURIs: strings.Split(env("DRIVER_REDIRECT_URI", "http://127.0.0.1/callback"), ","),
+		AccessTTL:    access, RefreshTTL: refresh,
+	}, nil
 }
 
 func readJSON(path string, v any) error {

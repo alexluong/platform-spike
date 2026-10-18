@@ -178,3 +178,6 @@ type APIError struct {
 func (e *APIError) Error() string {
 	return fmt.Sprintf("ory %s %s: %d %s", e.Method, e.URL, e.Status, e.Body)
 }
+
+// DeleteClient is not wired for this IdP yet (identity port, stack h): returns ErrNotSupported.
+func (c *Client) DeleteClient(context.Context, string) error { return identity.ErrNotSupported }

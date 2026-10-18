@@ -11,6 +11,9 @@ import (
 // ErrInvalidToken means the token is missing, malformed, expired or not ours.
 var ErrInvalidToken = errors.New("invalid token")
 
+// ErrNotSupported: the adapter doesn't implement this operation (yet).
+var ErrNotSupported = errors.New("not supported by this identity adapter")
+
 // Token is what a valid bearer token tells us. The app maps Subject to its own principal.
 type Token struct {
 	Subject string
@@ -43,4 +46,7 @@ type Provisioner interface {
 	// and may keep it disabled until the agent.registered outbox event is applied (so a
 	// rolled-back registration leaves no usable credential).
 	CreateClient(ctx context.Context, name, merchantID string) (Client, error)
+	// DeleteClient removes a machine client (by ClientID): its secret stops minting tokens.
+	// An adapter that shares the app's DB does it in the caller's transaction (ctx).
+	DeleteClient(ctx context.Context, clientID string) error
 }

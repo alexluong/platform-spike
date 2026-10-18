@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/alexluong/platform-spike/go/internal/adapters/logto"
+	"github.com/alexluong/platform-spike/go/internal/adapters/oidcop"
 	"github.com/alexluong/platform-spike/go/internal/adapters/openfga"
 	"github.com/alexluong/platform-spike/go/internal/adapters/ory"
 	"github.com/alexluong/platform-spike/go/internal/adapters/spicedb"
@@ -36,6 +37,31 @@ func main() {
 	log.Info("bootstrap done")
 }
 
+// rotateSigningKey (stack h): `bootstrap rotate-signing-key` in any app container. The new
+// key is published at once and signs after PUBLISH_AHEAD (default 1m: every instance
+// reloads keys every 30s); the old keys verify for RETIRE_AFTER more (default 30m: two
+// access-token lifetimes).
+func rotateSigningKey(ctx context.Context, log *slog.Logger) error {
+	ahead, err := time.ParseDuration(env("PUBLISH_AHEAD", "1m"))
+	if err != nil {
+		return err
+	}
+	retire, err := time.ParseDuration(env("RETIRE_AFTER", "30m"))
+	if err != nil {
+		return err
+	}
+	pool, err := db.Open(ctx, env("DATABASE_URL", "postgres://app:app@localhost:5432/app"))
+	if err != nil {
+		return err
+	}
+	defer pool.Close()
+	if err := oidcop.Rotate(ctx, pool, os.Getenv("ISSUER_SECRET"), ahead, retire); err != nil {
+		return err
+	}
+	log.Info("signing key rotated", "signsAfter", ahead, "oldRetireAfter", retire)
+	return nil
+}
+
 func retry(log *slog.Logger, what string, f func() error) error {
 	var err error
 	for i := 0; i < 120; i++ {
@@ -50,6 +76,9 @@ func retry(log *slog.Logger, what string, f func() error) error {
 
 func run(log *slog.Logger) error {
 	ctx := context.Background()
+	if len(os.Args) > 1 && os.Args[1] == "rotate-signing-key" {
+		return rotateSigningKey(ctx, log)
+	}
 
 	pool, err := db.Open(ctx, env("DATABASE_URL", "postgres://app:app@localhost:5432/app"))
 	if err != nil {
@@ -137,6 +166,19 @@ func run(log *slog.Logger) error {
 			return err
 		}
 		out = cfg
+	case "oidcop":
+		// The issuer lives in the app DB: its tables, nothing external. The server creates
+		// the first signing key at start (under a lock).
+		pool, err := db.Open(ctx, env("DATABASE_URL", "postgres://app:app@localhost:5432/app"))
+		if err != nil {
+			return err
+		}
+		defer pool.Close()
+		if err := oidcop.Migrate(ctx, pool); err != nil {
+			return fmt.Errorf("issuer migrations: %w", err)
+		}
+		log.Info("issuer migrations applied")
+		out = map[string]any{"idp": "oidcop"}
 	default:
 		return fmt.Errorf("unknown IDP %q", os.Getenv("IDP"))
 	}
