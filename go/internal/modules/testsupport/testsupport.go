@@ -185,4 +185,3 @@ func (m *Module) createUser(ctx context.Context, r *core.Req) (any, error) {
 	}
 	return map[string]any{"id": id, "email": in.Email}, nil
 }
-

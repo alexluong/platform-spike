@@ -46,7 +46,9 @@ type Pool struct {
 
 type poolCtxKey struct{}
 
-func withPool(ctx context.Context, p *Pool) context.Context { return context.WithValue(ctx, poolCtxKey{}, p) }
+func withPool(ctx context.Context, p *Pool) context.Context {
+	return context.WithValue(ctx, poolCtxKey{}, p)
+}
 
 func poolFrom(ctx context.Context) *Pool {
 	p, _ := ctx.Value(poolCtxKey{}).(*Pool)
