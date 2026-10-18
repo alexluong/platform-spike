@@ -207,13 +207,13 @@ func (x *Instances) findUser(ctx context.Context, p *Pool, orgID, email string) 
 		if len(out.Result) == 1 {
 			return out.Result[0].UserID, nil
 		}
-		if len(out.Result) > 1 || attempt >= 20 {
+		if len(out.Result) > 1 || attempt >= 40 {
 			return "", fmt.Errorf("%d users match", len(out.Result))
 		}
 		select {
 		case <-ctx.Done():
 			return "", ctx.Err()
-		case <-time.After(150 * time.Millisecond):
+		case <-time.After(200 * time.Millisecond):
 		}
 	}
 }

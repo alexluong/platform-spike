@@ -79,3 +79,38 @@ test.runIf(bench === 'login')('login latency per pool', async () => {
   }
   summary('GET /api/me with a tenant token', api)
 })
+
+// Provisioning failure story: Zitadel down while a merchant is created. Expected: 201
+// provisioning, stays provisioning, the outbox relay retries, active soon after Zitadel is back.
+test.runIf(bench === 'failure')('provisioning with Zitadel down', async () => {
+  const { execSync } = await import('node:child_process')
+  const dc = (cmd: string) => execSync(`docker compose -p ps-i --profile i ${cmd}`, { cwd: '..', stdio: 'pipe', env: { ...process.env, DOCKER_HOST: 'ssh://cs-ws' } })
+  const admin = await platformAdmin()
+  const owner = await newUser('user', { label: 'fail-owner' })
+  ;(await admin.api.get('/api/platform/merchants')).status // warm the workforce keys
+  await owner.api.get('/api/me') // warm the platform keys
+  dc('stop i-zitadel')
+  const t0 = performance.now()
+  try {
+    const r = await admin.api.post<Merchant>('/api/platform/merchants', { name: uniq('fail'), ownerUserId: owner.id })
+    const id = r.body!.id
+    const states: string[] = [`create ${r.status} ${r.body?.status}`]
+    await new Promise((res) => setTimeout(res, 20_000))
+    const mid = await owner.api.get<Merchant>(`/api/merchants/${id}`)
+    states.push(`after 20 s with Zitadel down: ${mid.status} ${mid.body?.status}`)
+    const store = await owner.api.post(`/api/merchants/${id}/stores`, { name: 'while provisioning' })
+    states.push(`store create while provisioning: ${store.status}`)
+    const up = performance.now()
+    dc('start i-zitadel')
+    for (;;) {
+      const g = await owner.api.get<Merchant>(`/api/merchants/${id}`)
+      if (g.body?.status === 'active') break
+      if (performance.now() - up > 300_000) throw new Error('not active 300 s after Zitadel restart')
+      await new Promise((res) => setTimeout(res, 500))
+    }
+    states.push(`active ${Math.round(performance.now() - up)} ms after 'start i-zitadel' (total ${Math.round(performance.now() - t0)} ms)`)
+    appendFileSync(out, JSON.stringify({ at: new Date().toISOString(), name: 'failure story', states }) + '\n')
+  } finally {
+    dc('start i-zitadel')
+  }
+})
