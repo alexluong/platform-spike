@@ -1,7 +1,7 @@
 # Zitadel instances bench (round 4, TASK-62): one Zitadel v4 deployment + Postgres, nothing else.
 # Run through ./up.sh (generates the System API key and passes it in), not directly:
 #   DOCKER_HOST=ssh://cs-ws ./up.sh            # start (or restart with new env)
-#   DOCKER_HOST=ssh://cs-ws docker compose -p ps-zbench -f compose.yaml down -v
+#   DOCKER_HOST=ssh://cs-ws ZBENCH_SYSTEM_KEY=x docker compose -p ps-zbench -f compose.yaml down -v
 # Published: Zitadel on cs-ws:8099. Default instance domain = ZBENCH_HOST (cs-ws.lab.alexluong.com);
 # every other instance is reached with `x-zitadel-instance-host: <internal name>` (no DNS).
 # Dev-only secrets below are placeholders for a throwaway local stack.

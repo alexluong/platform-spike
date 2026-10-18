@@ -109,6 +109,81 @@ Gotchas:
 
 Instance with a login setup, 21 users, one login: 1516 rows in 44 tables (`events2` 679, `fields` 496, …). `DELETE /system/v1/instances/{id}` → 200 in 28 ms; discovery 404 at once; domain reusable at once (re-create 200). After delete: 756 rows in 5 tables, unchanged after 90 s: **`eventstore.events2` 681 (all events kept, plus the removal event)**, `current_states` 64→67, `milestones3` 6, `instance_features5` 3, `web_keys1` 2. Deleting merchants does not shrink the event store; purging is a manual SQL job.
 
-## Bench
+## Bench (part 2): **reduced, measured under load**
 
-(pending: part 2)
+cs-ws never went quiet: after the ~2 h wait (load 10–50, `pc-bench` containers present the whole time) the bench ran the **reduced version**: up to **1,000 instances** (plus ~35 from probes/smoke = 1,034 in the DB), creation concurrency 2. During measurement the host load average was **13–70** on 4 CPUs (other workspaces' `pc-*`/`pr-*` benches and stack i's suite `ps-i`, whose Zitadel + Postgres were the top CPU users). **Latencies below are inflated and noisy; resource growth per instance and the idle-CPU mechanism are the reliable results.** The client ran on the Mac (RTT to cs-ws ~3.5 ms; `/debug/healthz` p50 ~5 ms is the floor). Zitadel `mem_limit` 2 GB, Postgres 2 GB, `MaxOpenConns` 30, bcrypt cost 6, caches off (Zitadel default).
+
+Raw data: `bench/zitadel-instances/out/{grow,measure,restart}.jsonl`. Every 10th instance got a login setup (project, PKCE app, one user); logins pick random login-ready instances; JWKS/discovery hit random instances.
+
+### Growth
+
+| instances | create instance p50 / p95 (ms) | + login setup p50 / p95 (ms) | DB size | `events2` rows | `fields` rows | host load (1m) |
+|---|---|---|---|---|---|---|
+| 250 | 1,672 / 2,345 | 732 / 1,086 | 292 MB | 176 k | 138 k | 48 |
+| 500 | 1,797 / 2,902 | 761 / 1,277 | 535 MB | 332 k | 262 k | 39 |
+| 1,000 | 2,104 / 3,925 | 892 / 1,555 | 1,019 MB | 641 k | 509 k | 31 |
+
+- **Per instance: ~1 MB of Postgres and ~620 events** (an empty instance from `_create` is most of it: default policies, texts, keys), linear so far. Largest relations at 1k: `events2` 553 MB, `fields` 362 MB, `custom_texts2` 21 MB. **Extrapolated 10k: ~10 GB, ~6.2 M events, before any users.**
+- Create latency rose 1.7 → 2.1 s p50 (load also varied). 0 errors in 1,000 creates. At conc 2 that is ~1.1 s wall per instance: 10k ≈ 3 h.
+
+### Latency (random instances)
+
+| instances | login p50 / p95 (ms) | authorize / session / finalize / token p50 | JWKS p50 / p95 | discovery p50 / p95 | host load |
+|---|---|---|---|---|---|
+| 250 | 188 / 577 | 30 / 53 / 40 / 54 | 10.7 / 16.3 | 9.3 / 17.0 | 48 |
+| 500 | 175 / 911 | 21 / 51 / 39 / 48 | 8.5 / 14.9 | 8.0 / 13.8 | 39–44 |
+| 1,000 | 131 / 208 | 20 / 39 / 29 / 36 | 11.9 / 23.5 | 9.5 / 19.8 | 27–31 |
+| 1,000, TTL settings, instance inactive | 221 / 648 | 34 / 65 / 41 / 65 | 16.0 / 30.7 | 13.7 / 36.8 | 13–34 |
+
+No degradation with instance count visible up to 1k (the p95 swings follow host load). Login = 4 requests (authorize, `POST /v2/sessions` with password, finalize, token). JWKS on all 1,000 instances in one pass (conc 4): p50 16–22 ms, done in 5–7 s.
+
+### Idle CPU: the main scaling cost
+
+Mechanism (code, v4.19.5): each projection's scheduler runs every `RequeueEvery` (60 s) over `ActiveInstances()`, an in-memory LRU of instances **that served a request since start** (`internal/query/cache.go`, `internal/eventstore/handler/v2/handler.go`). `Projections.HandleActiveInstances` is that LRU's TTL (0 = never expires), `MaxActiveInstances` its size (0 = unlimited). Reads also trigger projections for their instance on demand, so an instance that dropped out still works.
+
+| state (1,000 instances, no requests during the 60 s sample) | Zitadel CPU | Postgres CPU | Zitadel RSS |
+|---|---|---|---|
+| defaults, right after growing (all 1,000 active) | **36 %** | **31 %** | 238 MB |
+| defaults, after restart (LRU empty) | 8 % | 3 % | 87 MB |
+| defaults, after restart + one JWKS request to every instance | **35 %** | **40 %** | 150 MB |
+| `HandleActiveInstances=2m`, `MaxActiveInstances=200`, just after touching all | 43 % | 29 % | 146 MB |
+| same, 2.5 min later (TTL expired) | **6 %** | **0.5 %** | 137 MB |
+| (reference) 250 / 500 instances, defaults, all active | 7 % / 24 % | 12 % / 27 % | 159 / 169 MB |
+
+- **Idle cost scales with the number of instances that saw traffic**, not with the total. With defaults every instance that ever got one request (a JWKS fetch by our gateway counts) stays in the scheduler loop forever: ~0.35 core Zitadel + ~0.35 core Postgres per 1,000 active instances, here. Linear extrapolation: **10k active ≈ 3.5 + 3.5 cores doing nothing useful**, and one scheduler pass over 10k instances × ~100 projections may not finish in 60 s. Not measured (reduced bench).
+- **With a TTL it drops to ~0**, and logins on inactive instances still work (table above: 0 errors; first request pays the on-demand projection trigger, p50 ~220 ms under load vs ~130–190). So **`HandleActiveInstances` (e.g. 10–30 m) plus a `MaxActiveInstances` cap is mandatory** for thousands of instances.
+- Memory stays small: Zitadel RSS 80–240 MB at 1k (caches off). Postgres ~0.6–0.9 GB (shared_buffers 512 MB).
+
+### Restart
+
+| config | ready (`/debug/ready`) | first login | CPU settled < 15 % |
+|---|---|---|---|
+| 20 instances, defaults | 6.6 s | 7.9 s | 22 s |
+| 1,000, defaults | **34 s** | 35 s | 70 s |
+| 1,000, TTL 2 m / max 200 | 27 s | 28 s | 104 s (noisy, load 51) |
+
+Startup time grows with instance count (34 s at 1k vs 7 s at 20; startup work scales with instances, cause not profiled). Catch-up after a restart is lazy (instances join the scheduler as they get requests), so there's no storm unless traffic touches every instance at once. Extrapolating linearly, 10k ≈ 5 min to ready: rolling restarts with ≥ 2 replicas are needed. Unmeasured.
+
+## Verdict: one instance per merchant at 10k
+
+**Feasible on functionality; scale is only proven to 1k under load, and 10k needs tuning and a real test before we commit.** Everything the model needs works per instance through the header: issuers, keys, users, sessions, invites, passkeys, per-merchant SMTP/SMS/branding/actions/MFA policy, custom store domains (trusted domains), Shop federation with per-instance linking, one shared Login UI v2. Per-instance cost is ~1 MB DB and ~2 s to create. Request latency did not grow from 250 to 1k.
+
+Main risks:
+1. **Idle projection load grows with active instances** (~0.7 core per 1k active, defaults). Must set `HandleActiveInstances` + `MaxActiveInstances`; behaviour at 10k (scheduler pass time, on-demand trigger latency for cold instances, many cold instances at once after an incident) is unmeasured.
+2. **Startup time grows with instances** (34 s at 1k); ~5 min at 10k by extrapolation.
+3. **Event store only grows**: ~6 M events at 10k before any user, deletes don't remove events.
+4. **Security config is ours**: forced MFA isn't enforced by the API; the gateway must strip/lower-case the headers; federation between instances needs either a deny-list hole (SSRF surface) or routing the backchannel via public ingress.
+5. One Postgres for all merchants: a noisy merchant or a bad migration hits everyone (blast radius). Zitadel's quotas/limits per instance exist but weren't tested.
+
+**Next measurement** (when cs-ws or a dedicated box is quiet): `bench.ts grow --to 10000 --conc 4` with `ZBENCH_HANDLEACTIVEINSTANCES=15m ZBENCH_MAXACTIVEINSTANCES=1000`, then `measure` / `touch` / `restart` at 2.5k, 5k, 10k. The scripts are rerunnable as is (state in `out/state.jsonl`, gitignored).
+
+## What stack i should do differently
+
+- **Login client = a System API user with `IAM_LOGIN_CLIENT`** (`ZITADEL_SYSTEMAPIUSERS` membership `System`), not a per-instance PAT: one credential for all instances. Instance owner PATs (from `_create`) for admin calls; they can't finalize auth requests.
+- **Select instances with `x-zitadel-instance-host: <lower-case internal domain>`**; instance domains are globally unique; **don't** include a port unless you want it in the issuer. Expect 404 (no Host fallback) for unknown/mis-cased names.
+- **Custom store domains = trusted domains** (`POST /admin/v1/trusted_domains`) + `x-zitadel-public-host`; an unregistered public host → 404. The app's verifier needs **every issuer of a merchant** (instance domain + each store domain), same JWKS; tokens only validate at Zitadel under the issuer they were minted with.
+- **Shop federation**: instance-level generic OIDC IdP per tenant instance, auto-linking **off**, `isIdTokenMapping: false`; the tenant must reach the Shop issuer from inside Zitadel (allow the range in `HTTPClient.DenyList`, or point at the public issuer via ingress). Auto-create the linked user ourselves from the intent's `addHumanUser` (the API doesn't). One link per instance and IdP is the wanted rule.
+- **Invites**: create users with `email.isVerified: true`, then `invite_code` / `password_reset` / `passkeys/registration_link` with `returnCode` and send our own email; passkey `domain` = the store's domain.
+- **Enforce MFA in our login path** (or rely on Login UI v2) and check `amr` for staff tokens; Zitadel's login policy alone doesn't block a password-only Session API login.
+- **Set `Projections.HandleActiveInstances` (10–30 m) and `MaxActiveInstances`** from day one; don't fetch JWKS for every instance on a schedule at startup (it marks them all active), fetch lazily per issuer.
+- Deleting a merchant: `DELETE /system/v1/instances/{id}` (fast, frees projections, keeps events; domain reusable).

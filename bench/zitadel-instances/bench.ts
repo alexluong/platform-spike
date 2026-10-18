@@ -219,7 +219,20 @@ async function restart() {
   console.log(JSON.stringify(res))
 }
 
+/** Request JWKS on every instance once (puts them all in Zitadel's active-instances LRU). */
+async function touch() {
+  const recs = load()
+  const t0 = performance.now()
+  const ms: number[] = []
+  await pool(recs, Number(flag('conc', '4')), async (r) => {
+    const k = await z('/oauth/v2/keys', { instance: r.domain })
+    if (k.status === 200) ms.push(k.ms)
+  })
+  console.log(JSON.stringify({ touched: ms.length, wallS: round((performance.now() - t0) / 1000), jwksMs: stat(ms) }))
+}
+
 if (cmd === 'grow') await grow()
+else if (cmd === 'touch') await touch()
 else if (cmd === 'measure') await measure()
 else if (cmd === 'restart') await restart()
 else {
