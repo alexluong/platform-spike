@@ -11,10 +11,13 @@ Run 2026-10-19 against `ps-i` on cs-ws (4 CPU / 11 GB VM, shared: other benches 
 | full, fresh stack (`down -v`), host load ~10–20 | **401 / 401** (362 core + 39 `multi-pool`; 30 `idp-tenancy` skipped), 156 s |
 | full, again on the same volume (114 → 368 instances), load ~20 | **401 / 401**, 146 s |
 | `multi-pool` only, at 519 instances, `HandleActiveInstances=30m` | **39 / 39** |
-| full at load 46–51 (other benches peaking), 519+ instances | 392 / 401: 2 logins found no user after 3 s (projection lag), one agent-grant expiry timing, 6 cascades in `auth.test.ts` from the failed fixture login. The user-search wait was raised to 8 s afterwards; see the final run below |
+| `multi-pool` only, at 1330 instances, final settings (`HandleActiveInstances=2m`, `MaxActiveInstances=200`), twice | **39 / 39** each |
+| full at load 40–76 (other benches peaking: `pr-*` used most of the host), 519–1330 instances | 386–392 / 401: 30 s test timeouts, projection lag past the waits (user search, client secret, just-linked user), cascades. The waits were lengthened after each |
+| full, final code and settings, 1330 → 2030 instances, load 8–39 | **400 / 401**, 335 s: one Sign in with Shop right after reinstate hit a 404 for the just-linked user past the 3 s wait (wait raised to 9 s; `multi-pool` 39/39 twice after) |
+| full, final code, 2030 → 2280 instances, load 13–36 | **400 / 401**, 376 s: `platform.test.ts` "suspend → reinstate" timed out at 30 s: it waits for `active` first, and provisioning during this run took p50 8.7 s, p95 16.8 s, max 51 s (load + suite bursts, see Provisioning) |
 | `go test ./...` | pass (all stacks' Go unit tests) |
 
-FINAL_RUN_PLACEHOLDER
+Verdict: the stack passes the whole suite (two clean 401/401 runs at load 10–20); on a host loaded to 30–76 by other benches, one or two tests miss Zitadel's projection lag or the 30 s test timeout per run. No failure is by design.
 
 Failures fixed on the way (all Zitadel eventual consistency or wiring, none in the suite):
 1. Login right after user creation: the login stand-in's user search returns 0 rows for a moment, a session for a just-created user 404s, and the **token request** can 404 `User.NotFound` and spend the code. Fixed with short waits in the login stand-in and a whole-flow retry in the driver (a person would retry too). On a loaded host the window reaches seconds.
@@ -80,10 +83,16 @@ The identity side reaches app state through two callbacks wired in the compositi
 | create request (merchant row + outbox), C=1, n=100 | ~5–11 | p50 26 ms, p95 45 ms |
 | create → `active` (polled every 100 ms), C=1, n=100 | ~5–11 | **p50 0.88 s, p95 1.10 s**, max 1.2 s |
 | create → `active`, C=4, n=150 | ~9 | p50 2.4 s, p95 4.0 s, max 4.7 s |
+| create → `active`, C=1, n=30, at ~2300 instances | ~20–25 | p50 2.2 s, p95 3.8 s (with `MaxActiveInstances=0`: 1.9 / 2.6 s) |
+| create → `active`, C=4, n=40, at ~2300 instances | ~20–25 | p50 4.1 s, p95 9.0 s (with `MaxActiveInstances=0`: 4.5 / 7.5 s) |
+| directory `created_at → ready_at` during a full suite run at 2030–2280 instances | 13–36 | p50 8.7 s, p95 16.8 s, max 51 s |
 | directory `created_at → ready_at`, all 508 merchants of the first full run (core suite bursts) | 10–20 | p50 2.7 s, p95 5.0 s |
 | rule 9: 10 in parallel | various | all active well within 60 s in every passing run |
 | Zitadel DB growth per merchant | | **~1.1 MB** (34 → 143 MB for 100 merchants; 143 → 585 MB for 405 more incl. test users). ~670 events per instance (`events2` ~0.6 MB, `eventstore.fields` ~0.35 MB, rest projections) |
 | app DB growth per merchant | | ~7 KB (directory row + merchant) |
+| Zitadel DB at 2427 instances | | 2.67 GB (~1.1 MB per instance holds) |
+
+Provisioning gets slower under host load and with the suite's bursts (8 workers, each step a projection wait). The shared host doesn't let me separate host load from instance count; the bench agent saw ~2 s p50 under load at 1k instances. `MaxActiveInstances` made no clear difference to provisioning time.
 
 **Failure and compensation:** the merchant row commits first; provisioning is an outbox row retried forever (transient errors), each step resumable from the directory row. So a half-created merchant is `provisioning`, never half-active, and a retry completes it (§16.3 option 2). Measured with Zitadel stopped (`bench-i`, `BENCH=failure`): create → `201 provisioning`; 20 s later still `provisioning`; the merchant's own API keeps working (store create 201); `active` 37 s after `docker compose start i-zitadel` (Zitadel's cold start under load ~50, then the relay's next tick). Window: until Zitadel is back, the merchant's tenant logins don't exist; nothing else is affected. Leftovers: a merchant that is never wanted again leaves an instance (delete is one system call; the event store keeps its events, bench probe 7). Only `invalid_argument`/`unimplemented` dead-letter the row (then the merchant stays `provisioning` and needs a person).
 
@@ -99,8 +108,12 @@ Average CPU (cores) and memory from cgroup counters (`bench/i/cpu.sh`), on a sha
 | idle, ~510 instances (default projections) | **0.30–0.38** / 260 MiB | **0.25–0.34** / ~1 GiB (anon 700 MiB) | 0.01 | 0.00 |
 | idle, 519 instances (default projections) | **0.51** / 224 MiB | **0.50** / 1.2 GiB | 0.01 | 0.00 |
 | idle, 519 instances, `HandleActiveInstances=30m` | **0.08** / 79 MiB | **0.02** / 929 MiB (anon 256 MiB) | 0.01 | 0.00 |
+| idle, 1330 instances, `HandleActiveInstances=2m`, `MaxActiveInstances=200` (final) | **0.08** / 82 MiB | **0.02** / 1.2 GiB (anon 261 MiB) | 0.01 | 0.00 |
+| idle, 2427 instances, final settings | **0.08** / 82 MiB | **0.02** / 668 MiB (anon 266 MiB) | 0.01 | 0.00 |
 
-- **Idle CPU grows linearly with instances by default**: every projection is requeued for every instance every 60 s (`Projections.RequeueEvery`, `HandleActiveInstances: 0` = all instances always active). ~1 ms of Zitadel + ~1 ms of Postgres CPU per instance per second idle: about one core per 500 merchants doing nothing, 20 cores at 10 000. `ZITADEL_PROJECTIONS_HANDLEACTIVEINSTANCES=30m` (set in compose) projects only instances with recent events: idle fell to 0.1 core at 519 instances, and the `multi-pool` suite plus the login bench still passed (queries trigger projections on demand). Not measured: the first login at an instance idle for > 30 min (it pays for catching up its projections).
+- **Idle CPU grows linearly with instances by default**: every projection is requeued for every instance every 60 s (`Projections.RequeueEvery`, `HandleActiveInstances: 0` = all instances always active). ~1 ms of Zitadel + ~1 ms of Postgres CPU per instance per second idle: about one core per 500 merchants doing nothing, 20 cores at 10 000 (the bench agent: ~0.36 + 0.35 core per 1000 instances that got any request since start). With `HandleActiveInstances=2m` and `MaxActiveInstances=200` (final compose; the bench agent's recommendation) idle stays at ~0.1 core from 519 to 2427 instances, and the suites and the login bench still pass (queries trigger projections on demand). Logins at instances idle for longer than the window work (bench agent); the first one pays for catching up projections (not timed here).
+- **Zitadel restart time grows with instances**: 31 s at 1330 and 30 s at 2427 instances here, 34 s at 1k for the bench agent (cold start of the whole stack from `down -v`: 84 s).
+- **JWKS fetches mark instances active**: the app fetches a pool's keys lazily (first token of that issuer) plus once at provisioning; it never fetches all pools at start (that would wake every instance's projections).
 - Postgres needed more than `a`'s 512 MiB: it sat at the 1 GiB limit at ~500 instances (raised to 2 GiB).
 
 **Login latency** (sequential, 20 each, driver on the Mac through the gateway; whole flow authorize → login → callback → token):
@@ -114,6 +127,8 @@ Average CPU (cores) and memory from cgroup counters (`bench/i/cpu.sh`), on a sha
 | tenant customer | 75 / 105 | 177 / 515 | 76 / 98 |
 | Sign in with Shop (both legs) | 178 / 224 | 239 / 667 | 213 / 330 |
 | `GET /api/me` with a tenant token (verify with cached keys) | 5 / 7 | 6 / 10 | 6 / 11 |
+
+At 1330 instances, final projection settings, load ~15–17: workforce 121 / 235, platform 130 / 244, shop 170 / 263, tenant staff 123 / 196, tenant customer 129 / 165, Sign in with Shop 371 / 467, `GET /api/me` 7 / 11 ms.
 
 (p50 / p95.) The instance count itself doesn't slow a login (instance lookup is one indexed query; no cache configured); the spread at 519 with default projections is the idle projection load competing on a 4-core host.
 
