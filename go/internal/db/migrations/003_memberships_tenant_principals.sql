@@ -1,12 +1,14 @@
 -- Round 4 (SPEC §16.2, §16.4, §16.5), shared by every Go stack:
 -- * membership moves from users.merchant_id to a table, so a platform account can belong to
 --   several merchants (partners). Stacks that keep "one merchant per user" enforce it in the
---   module (MULTI_MERCHANT unset), not in the schema.
+--   module (no tenant pools = MultiMerchant off), not in the schema.
 -- * users.home_merchant_id: a principal that belongs to a merchant's own pool (tenant staff,
 --   tenant customers, a merchant's customer record linked to a Shop account). NULL for
 --   platform-level principals (staff, platform accounts, Shop accounts).
 -- * users.shop_account_id: a merchant's customer record linked to a Shop account. Its
 --   idp_subject is NULL until the buyer signs in with Shop at that merchant.
+-- * merchants.pool_ready: false while an adapter that provisions the tenant pool after the
+--   merchant's transaction (stack i) builds it; shown as status "provisioning".
 -- * orders.merchant_customer_id: the merchant's customer record an order belongs to (the
 --   placing principal, or for a Shop-token order the merchant's record linked to it).
 CREATE TABLE memberships (
@@ -31,3 +33,5 @@ CREATE UNIQUE INDEX users_shop_link ON users(home_merchant_id, shop_account_id) 
 
 ALTER TABLE orders ADD COLUMN merchant_customer_id text REFERENCES users(id);
 CREATE INDEX ON orders(merchant_customer_id);
+
+ALTER TABLE merchants ADD COLUMN pool_ready boolean NOT NULL DEFAULT true;

@@ -27,7 +27,7 @@ func TestMeasurePools(t *testing.T) {
 		mid := db.NewID("m")
 		start := time.Now()
 		tx, _ := e.pool.Begin(ctx)
-		if err := e.iss.ProvisionMerchant(db.WithTx(ctx, tx), mid); err != nil {
+		if err := e.iss.provisionMerchant(db.WithTx(ctx, tx), mid); err != nil {
 			t.Fatal(err)
 		}
 		if err := tx.Commit(ctx); err != nil {

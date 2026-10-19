@@ -29,27 +29,34 @@ func (m *Module) Ops() []core.Op {
 		{Auth: core.AuthPublic, Method: "POST", Path: "/api/_test/users", Status: 201, Run: m.createUser},
 		{Auth: core.AuthPublic, Method: "GET", Path: "/api/_test/driver-config", Run: m.driverConfig},
 		{Auth: core.AuthPublic, Method: "POST", Path: "/api/_test/merchants/{mid}/users", Status: 201, Run: m.createTenantUser},
-		{Auth: core.AuthPublic, Method: "GET", Path: "/api/_test/login-hint", Run: m.loginHint},
+		{Auth: core.AuthPublic, Method: "GET", Path: "/api/_test/home-realm", Run: m.homeRealm},
 	}
 }
 
-// loginHint (multi-pool stacks): which pool a platform-level test account lives in, for the
-// driver's loginUser (the core suite gives it no pool). Opaque to the app.
-func (m *Module) loginHint(ctx context.Context, r *core.Req) (any, error) {
+// homeRealm (multi-pool stacks): which platform-level kinds hold this email, from the app's
+// records (identifier-first login: the driver picks the platform-level pool from it, as a login
+// page would ask "staff, merchant or Shop?"; the core suite's loginUser has no pool argument).
+func (m *Module) homeRealm(ctx context.Context, r *core.Req) (any, error) {
 	if err := m.check(r); err != nil {
 		return nil, err
 	}
-	h, ok := m.IdP.(interface {
-		LoginHint(ctx context.Context, email string) (map[string]any, error)
-	})
-	if !ok {
+	if _, ok := m.IdP.(identity.TenantPools); !ok {
 		return nil, core.ErrNotFound
 	}
-	out, err := h.LoginHint(ctx, r.HTTP.URL.Query().Get("email"))
-	if errors.Is(err, identity.ErrNotFound) {
-		return nil, core.ErrNotFound
+	rows, err := r.Tx.Query(ctx, `SELECT kind FROM users WHERE home_merchant_id IS NULL AND email=$1 ORDER BY kind`,
+		strings.ToLower(strings.TrimSpace(r.HTTP.URL.Query().Get("email"))))
+	if err != nil {
+		return nil, err
 	}
-	return out, err
+	kinds := []string{}
+	for rows.Next() {
+		var k string
+		if err := rows.Scan(&k); err != nil {
+			return nil, err
+		}
+		kinds = append(kinds, k)
+	}
+	return map[string]any{"kinds": kinds}, rows.Err()
 }
 
 // createTenantUser (SPEC §16.4): an identity in the merchant's own pool and the app record.
@@ -81,6 +88,13 @@ func (m *Module) createTenantUser(ctx context.Context, r *core.Req) (any, error)
 	}
 	if !exists {
 		return nil, core.ErrNotFound
+	}
+	// Checked before the IdP call: an external IdP's user can't roll back with this transaction.
+	if err := r.Tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM users WHERE home_merchant_id=$1 AND kind=$2 AND email=$3)`, mid, in.Kind, in.Email).Scan(&exists); err != nil {
+		return nil, err
+	}
+	if exists {
+		return nil, core.Conflict("email_taken")
 	}
 	sub, err := pools.CreateTenantUser(ctx, mid, in.Email, in.Password, in.Kind)
 	if errors.Is(err, identity.ErrNotFound) {

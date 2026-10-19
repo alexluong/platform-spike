@@ -22,6 +22,10 @@ type Module struct {
 	Pools identity.TenantPools
 }
 
+// StatusSQL: the status a client sees. A merchant whose tenant pool is still being
+// provisioned (SPEC §16.3) shows "provisioning" until it is ready, unless suspended.
+const StatusSQL = `CASE WHEN status='active' AND NOT pool_ready THEN 'provisioning' ELSE status END`
+
 func merchantTarget(ctx context.Context, r *core.Req) (core.Target, error) {
 	return scope.Merchant(ctx, r.Tx, r.Path("mid"))
 }
@@ -36,7 +40,7 @@ func (m *Module) Ops() []core.Op {
 }
 
 // identity: the merchant's tenant issuer (SPEC §16.3), no auth: what a storefront or admin UI
-// starts a login at. The issuer comes from the directory, keyed by the merchant.
+// starts a login at. From the adapter's directory, keyed by the merchant; at least {issuer}.
 func (m *Module) identity(ctx context.Context, r *core.Req) (any, error) {
 	if m.Pools == nil {
 		return nil, core.ErrNotFound
@@ -48,13 +52,11 @@ func (m *Module) identity(ctx context.Context, r *core.Req) (any, error) {
 	if !exists {
 		return nil, core.ErrNotFound
 	}
-	iss, err := m.Pools.MerchantIssuer(ctx, r.Path("mid"))
+	out, err := m.Pools.PoolIdentity(ctx, r.Path("mid"))
 	if errors.Is(err, identity.ErrNotFound) {
-		return nil, core.ErrNotFound
-	} else if err != nil {
-		return nil, err
+		return nil, core.ErrNotFound // created, pool not started yet
 	}
-	return map[string]any{"issuer": iss}, nil
+	return out, err
 }
 
 // CanJoin: whether user (already locked by the caller) may become a member of mid. Tenant staff
@@ -87,7 +89,7 @@ func CanJoin(ctx context.Context, q pgx.Tx, userID, mid string, multiMerchant bo
 
 func (m *Module) get(ctx context.Context, r *core.Req) (any, error) {
 	var id, name, status string
-	if err := r.Tx.QueryRow(ctx, `SELECT id, name, status FROM merchants WHERE id=$1`, r.Path("mid")).Scan(&id, &name, &status); err != nil {
+	if err := r.Tx.QueryRow(ctx, `SELECT id, name, `+StatusSQL+` FROM merchants WHERE id=$1`, r.Path("mid")).Scan(&id, &name, &status); err != nil {
 		return nil, err
 	}
 	return map[string]any{"id": id, "name": name, "status": status}, nil

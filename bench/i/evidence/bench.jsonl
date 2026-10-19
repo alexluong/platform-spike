@@ -1,0 +1,48 @@
+{"at":"2026-10-18T20:42:03.075Z","name":"workforce (platform staff)","n":20,"p50":82,"p95":107,"max":107}
+{"at":"2026-10-18T20:42:04.707Z","name":"platform (account/owner)","n":20,"p50":83,"p95":121,"max":121}
+{"at":"2026-10-18T20:42:06.428Z","name":"shop (buyer, platform instance)","n":20,"p50":82,"p95":137,"max":137}
+{"at":"2026-10-18T20:42:08.104Z","name":"tenant staff","n":20,"p50":84,"p95":110,"max":110}
+{"at":"2026-10-18T20:42:09.629Z","name":"tenant customer","n":20,"p50":75,"p95":105,"max":105}
+{"at":"2026-10-18T20:42:13.181Z","name":"Sign in with Shop (both legs)","n":20,"p50":178,"p95":224,"max":224}
+{"at":"2026-10-18T20:42:13.527Z","name":"GET /api/me with a tenant token","n":50,"p50":5,"p95":7,"max":14}
+{"at":"2026-10-18T20:44:02.796Z","name":"create request (C=1)","n":100,"p50":26,"p95":45,"max":65}
+{"at":"2026-10-18T20:44:02.799Z","name":"create → active (C=1)","n":100,"p50":881,"p95":1097,"max":1211}
+{"at":"2026-10-18T20:49:10.074Z","name":"workforce (platform staff)","n":20,"p50":83,"p95":126,"max":126}
+{"at":"2026-10-18T20:49:11.693Z","name":"platform (account/owner)","n":20,"p50":82,"p95":115,"max":115}
+{"at":"2026-10-18T20:49:13.261Z","name":"shop (buyer, platform instance)","n":20,"p50":78,"p95":112,"max":112}
+{"at":"2026-10-18T20:49:14.863Z","name":"tenant staff","n":20,"p50":81,"p95":112,"max":112}
+{"at":"2026-10-18T20:49:16.522Z","name":"tenant customer","n":20,"p50":85,"p95":115,"max":115}
+{"at":"2026-10-18T20:49:22.191Z","name":"Sign in with Shop (both legs)","n":20,"p50":277,"p95":435,"max":435}
+{"at":"2026-10-18T20:49:22.632Z","name":"GET /api/me with a tenant token","n":50,"p50":6,"p95":9,"max":18}
+{"at":"2026-10-18T20:51:35.985Z","name":"create request (C=4)","n":150,"p50":61,"p95":141,"max":228}
+{"at":"2026-10-18T20:51:35.987Z","name":"create → active (C=4)","n":150,"p50":2375,"p95":4008,"max":4723}
+{"at":"2026-10-18T20:53:45.875Z","name":"workforce (platform staff)","n":20,"p50":232,"p95":475,"max":475}
+{"at":"2026-10-18T20:53:49.256Z","name":"platform (account/owner)","n":20,"p50":161,"p95":353,"max":353}
+{"at":"2026-10-18T20:53:51.291Z","name":"shop (buyer, platform instance)","n":20,"p50":93,"p95":153,"max":153}
+{"at":"2026-10-18T20:53:53.070Z","name":"tenant staff","n":20,"p50":82,"p95":130,"max":130}
+{"at":"2026-10-18T20:53:56.753Z","name":"tenant customer","n":20,"p50":177,"p95":515,"max":515}
+{"at":"2026-10-18T20:54:02.543Z","name":"Sign in with Shop (both legs)","n":20,"p50":239,"p95":667,"max":667}
+{"at":"2026-10-18T20:54:02.972Z","name":"GET /api/me with a tenant token","n":50,"p50":6,"p95":10,"max":17}
+{"at":"2026-10-18T20:58:07.062Z","name":"workforce (platform staff)","n":20,"p50":84,"p95":118,"max":118}
+{"at":"2026-10-18T20:58:08.764Z","name":"platform (account/owner)","n":20,"p50":80,"p95":151,"max":151}
+{"at":"2026-10-18T20:58:10.479Z","name":"shop (buyer, platform instance)","n":20,"p50":89,"p95":101,"max":101}
+{"at":"2026-10-18T20:58:11.977Z","name":"tenant staff","n":20,"p50":72,"p95":110,"max":110}
+{"at":"2026-10-18T20:58:13.529Z","name":"tenant customer","n":20,"p50":76,"p95":98,"max":98}
+{"at":"2026-10-18T20:58:17.931Z","name":"Sign in with Shop (both legs)","n":20,"p50":213,"p95":330,"max":330}
+{"at":"2026-10-18T20:58:18.396Z","name":"GET /api/me with a tenant token","n":50,"p50":6,"p95":11,"max":17}
+{"at":"2026-10-18T21:42:37.422Z","name":"failure story","states":["create 201 provisioning","after 20 s with Zitadel down: 200 provisioning","store create while provisioning: 201","active 36567 ms after 'start i-zitadel' (total 56799 ms)"]}
+{"at":"2026-10-18T22:10:37.728Z","name":"workforce (platform staff)","n":20,"p50":121,"p95":235,"max":235}
+{"at":"2026-10-18T22:10:40.591Z","name":"platform (account/owner)","n":20,"p50":130,"p95":244,"max":244}
+{"at":"2026-10-18T22:10:44.193Z","name":"shop (buyer, platform instance)","n":20,"p50":170,"p95":263,"max":263}
+{"at":"2026-10-18T22:10:46.778Z","name":"tenant staff","n":20,"p50":123,"p95":196,"max":196}
+{"at":"2026-10-18T22:10:49.274Z","name":"tenant customer","n":20,"p50":129,"p95":165,"max":165}
+{"at":"2026-10-18T22:10:56.544Z","name":"Sign in with Shop (both legs)","n":20,"p50":371,"p95":467,"max":467}
+{"at":"2026-10-18T22:10:57.014Z","name":"GET /api/me with a tenant token","n":50,"p50":7,"p95":11,"max":15}
+{"at":"2026-10-18T22:46:40.606Z","name":"create request (C=1)","n":30,"p50":61,"p95":173,"max":195}
+{"at":"2026-10-18T22:46:40.608Z","name":"create → active (C=1)","n":30,"p50":2214,"p95":3810,"max":5116}
+{"at":"2026-10-18T22:47:37.026Z","name":"create request (C=4)","n":40,"p50":90,"p95":315,"max":382}
+{"at":"2026-10-18T22:47:37.027Z","name":"create → active (C=4)","n":40,"p50":4122,"p95":9039,"max":9640}
+{"at":"2026-10-18T22:49:32.479Z","name":"create request (C=1)","n":30,"p50":39,"p95":91,"max":94}
+{"at":"2026-10-18T22:49:32.480Z","name":"create → active (C=1)","n":30,"p50":1861,"p95":2642,"max":2668}
+{"at":"2026-10-18T22:50:28.466Z","name":"create request (C=4)","n":40,"p50":102,"p95":194,"max":225}
+{"at":"2026-10-18T22:50:28.468Z","name":"create → active (C=4)","n":40,"p50":4529,"p95":7536,"max":7544}

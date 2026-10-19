@@ -50,7 +50,7 @@ func (m *Module) register(ctx context.Context, r *core.Req) (any, error) {
 	}
 	mid := r.P.MerchantID
 	if in.MerchantID != "" {
-		if !r.P.IsMemberOf(in.MerchantID) {
+		if !r.P.MemberOf(in.MerchantID) {
 			return nil, core.ErrForbidden
 		}
 		mid = in.MerchantID

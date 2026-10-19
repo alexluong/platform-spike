@@ -18,7 +18,12 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-type Module struct{}
+type Module struct {
+	// ShopLinks (SPEC §16.5, multi-pool stacks): a platform-level customer (Shop account) orders
+	// at a merchant as that merchant's customer record linked to it; its history spans them.
+	// Off: every customer is its own merchant customer record.
+	ShopLinks bool
+}
 
 var errInvalidTransition = core.Conflict("invalid_transition")
 
@@ -85,7 +90,7 @@ func (m *Module) place(ctx context.Context, r *core.Req) (any, error) {
 	// The order belongs to the merchant's customer record: the caller itself, or for a Shop
 	// account the merchant's record linked to it, created on its first order (SPEC §16.5).
 	merchantCustomer := r.P.ID
-	if r.P.HomeMerchantID == "" {
+	if m.ShopLinks && r.P.HomeMerchantID == "" {
 		var err error
 		if merchantCustomer, err = customers.EnsureShopCustomer(ctx, r.Tx, r.Target.MerchantID, r.P.ID); err != nil {
 			return nil, err
@@ -153,7 +158,7 @@ func (m *Module) get(ctx context.Context, r *core.Req) (any, error) {
 	o := scope.OrderOf(r)
 	if r.P.Kind == perm.KindCustomer {
 		mine := o.CustomerID == r.P.ID || o.MerchantCustomerID == r.P.ID
-		if !mine && r.P.HomeMerchantID == "" && o.MerchantCustomerID != "" {
+		if !mine && m.ShopLinks && r.P.HomeMerchantID == "" && o.MerchantCustomerID != "" {
 			// a Shop account sees its orders at every merchant, through the linked records
 			if err := r.Tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM users WHERE id=$1 AND shop_account_id=$2)`, o.MerchantCustomerID, r.P.ID).Scan(&mine); err != nil {
 				return nil, err
@@ -169,6 +174,9 @@ func (m *Module) get(ctx context.Context, r *core.Req) (any, error) {
 func (m *Module) mine(ctx context.Context, r *core.Req) (any, error) {
 	if r.P.Kind != perm.KindCustomer {
 		return nil, core.ErrForbidden
+	}
+	if !m.ShopLinks {
+		return collect(r.Tx.Query(ctx, `SELECT `+scope.OrderCols+` FROM orders WHERE customer_id=$1 ORDER BY created_at`, r.P.ID))
 	}
 	if r.P.HomeMerchantID != "" {
 		// a merchant's own customer: that merchant's orders of its record (incl. Shop-token orders

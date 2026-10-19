@@ -246,18 +246,6 @@ func (s *Issuer) DriverConfig() map[string]any {
 	}
 }
 
-// LoginHint (TEST_MODE driver support): which platform-level pool holds this email. The core
-// suite's loginUser has no pool argument; a real UI knows its pool (staff console → workforce,
-// merchant admin → platform, Shop app → shop). Tenant pools are never searched.
-func (s *Issuer) LoginHint(ctx context.Context, email string) (map[string]any, error) {
-	var id string
-	err := s.db.QueryRow(ctx, `SELECT pool_id FROM idp_users WHERE email=$1 AND pool_id IN ('workforce','platform','shop') LIMIT 1`, normEmail(email)).Scan(&id)
-	if err != nil {
-		return nil, identity.ErrNotFound
-	}
-	return map[string]any{"pool": id, "issuer": s.issuerFor(id)}, nil
-}
-
 // Ping: the issuer is the app's DB.
 func (s *Issuer) Ping(ctx context.Context) error { return s.db.Ping(ctx) }
 

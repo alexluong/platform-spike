@@ -4,7 +4,8 @@
 // Every login is stack h's flow at a pool's issuer (authorize → POST <issuer>/login → code →
 // token, PKCE S256):
 // - loginUser: the core suite gives no pool, so the driver asks test support which platform-level
-//   pool (workforce, platform, shop) holds the email (GET /api/_test/login-hint). A real UI knows
+//   kind (platform → workforce, user → platform, customer → shop) holds the email
+//   (GET /api/_test/home-realm). A real UI knows
 //   its pool (staff console, merchant admin, Shop app).
 // - loginTenant: the merchant's issuer from GET /api/merchants/:mid/identity; staff log in through
 //   the `merchant-admin` client, customers through `storefront` (one pool, two user groups).
@@ -56,10 +57,27 @@ async function issuerOfMerchant(merchantId: string): Promise<string> {
   return ((await res.json()) as { issuer: string }).issuer
 }
 
+let base: Promise<string> | undefined
+/** PUBLIC_URL/oidc/ from test-mode driver config; a pool's issuer is base + pool id. */
+function issuerBase(): Promise<string> {
+  base ??= (async () => {
+    const res = await get(`${baseUrl}/api/_test/driver-config`, { 'x-test-secret': env.testSecret })
+    if (!res.ok) return fail('driver-config', res)
+    return ((await res.json()) as { issuerBase: string }).issuerBase
+  })()
+  return base
+}
+
+/** platform-level kind → its pool (stack h2's pool ids). */
+const poolOfKind: Record<string, string> = { platform: 'workforce', user: 'platform', customer: 'shop' }
+
 async function issuerOfEmail(email: string): Promise<string> {
-  const res = await get(`${baseUrl}/api/_test/login-hint?email=${encodeURIComponent(email)}`, { 'x-test-secret': env.testSecret })
-  if (!res.ok) return fail('login-hint', res)
-  return ((await res.json()) as { issuer: string }).issuer
+  const res = await get(`${baseUrl}/api/_test/home-realm?email=${encodeURIComponent(email)}`, { 'x-test-secret': env.testSecret })
+  if (!res.ok) return fail('home-realm', res)
+  const { kinds } = (await res.json()) as { kinds: string[] }
+  const pool = poolOfKind[kinds[0] ?? '']
+  if (!pool) throw new Error(`stack h2: no platform-level account for ${email}`)
+  return `${await issuerBase()}${pool}`
 }
 
 /** authorize at `issuer` → the auth request id and what the token exchange needs. */

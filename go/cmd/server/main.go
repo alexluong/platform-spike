@@ -2,9 +2,11 @@
 // Stack a: IDP=zitadel AUTHZ=spicedb. Stack b: IDP=ory AUTHZ=openfga.
 // Stack f: IDP=logto AUTHZ=spicedb.
 // Stack h: IDP=oidcop AUTHZ=spicedb (the OpenID provider runs inside this server, on the app DB).
-// Stack h2: IDP=oidcpool AUTHZ=spicedb MULTI_MERCHANT=1 (h with pools as rows, one issuer per pool).
+// Stack h2: IDP=oidcpool AUTHZ=spicedb (h with pools as rows, one issuer per pool).
 // Stack a2: IDP=zitadel-orgs AUTHZ=spicedb (an organization per merchant; the IdP is a
 // second outbox consumer).
+// Stack i: IDP=zitadel-instances AUTHZ=spicedb (a Zitadel instance per merchant; the app is
+// the identity gateway; pool provisioning and block state are outbox consumers).
 package main
 
 import (
@@ -91,7 +93,24 @@ func run(log *slog.Logger) error {
 
 	var id idp
 	var idSync *outbox.Relay // identity sync: IdPs that own tenancy consume the outbox too
+	var extraRelays outbox.Relays
+	var gateway func(http.Handler) http.Handler // stack i: identity hosts in front of the API
 	switch env("IDP", "zitadel") {
+	case "zitadel-instances":
+		x, err := zitadel.NewInstances(instancesConfig(), pool, log)
+		if err != nil {
+			return err
+		}
+		x.OnReady = func(ctx context.Context, mid string) error { return platform.MarkPoolReady(ctx, pool, mid) }
+		x.OnShopLink = customers.ShopLinker(pool)
+		id, gateway = x, x.Gateway
+		extraRelays = outbox.Relays{
+			// Provisioning: background (the merchant shows "provisioning"), merchants in parallel.
+			{DB: pool, Sync: x.Provisioner(), Log: log, Consumer: "pool", Lock: 779, Partitioned: true, Background: true,
+				Workers: envInt("PROVISION_WORKERS", 8), Accepts: zitadel.PoolEvents},
+			// Block/unblock on suspend/reinstate: drained in the request.
+			{DB: pool, Sync: x.PoolState(), Log: log, Consumer: "pool-state", Lock: 780, Partitioned: true, Accepts: zitadel.PoolStateEvents},
+		}
 	case "zitadel", "zitadel-orgs":
 		var cfg zitadel.Config
 		if err := readJSON(env("STACK_CONFIG", "/bootstrap/stack.json"), &cfg); err != nil {
@@ -157,6 +176,7 @@ func run(log *slog.Logger) error {
 	if idSync != nil {
 		relays = append(relays, idSync)
 	}
+	relays = append(relays, extraRelays...)
 	if err := enqueueSystemRoles(ctx, pool, relays[0]); err != nil {
 		return err
 	}
@@ -171,14 +191,16 @@ func run(log *slog.Logger) error {
 	}
 
 	var reg core.Registry
-	multi := os.Getenv("MULTI_MERCHANT") == "1"
+	// Round 4 (SPEC §16): an adapter with a pool per merchant turns on partners (several
+	// memberships) and Shop-linked customer records. Off: a/a2/b/f/h behave as in round 3.
 	pools, _ := id.(identity.TenantPools)
+	multi := pools != nil
 	reg.Add(&platform.Module{IdP: id, MultiMerchant: multi})
 	reg.Add(&merchants.Module{MultiMerchant: multi, Pools: pools})
 	reg.Add(&roles.Module{})
 	reg.Add(&stores.Module{})
 	reg.Add(&catalog.Module{})
-	reg.Add(&orders.Module{})
+	reg.Add(&orders.Module{ShopLinks: multi})
 	reg.Add(&payments.Module{})
 	reg.Add(&delivery.Module{})
 	reg.Add(&apps.Module{})
@@ -208,7 +230,11 @@ func run(log *slog.Logger) error {
 
 	relays.Run(ctx, time.Second)
 
-	srv := &http.Server{Addr: ":" + env("PORT", "8081"), Handler: mux, ReadHeaderTimeout: 10 * time.Second}
+	var handler http.Handler = mux
+	if gateway != nil {
+		handler = gateway(mux) // identity hosts → Zitadel / login stand-in; the rest → API
+	}
+	srv := &http.Server{Addr: ":" + env("PORT", "8081"), Handler: handler, ReadHeaderTimeout: 10 * time.Second}
 	go func() {
 		<-ctx.Done()
 		sctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -284,6 +310,24 @@ func oidcpoolConfig() (oidcpool.Config, error) {
 		RedirectURIs:  strings.Split(env("DRIVER_REDIRECT_URI", "http://127.0.0.1/callback"), ","),
 		AccessTTL:     access, RefreshTTL: refresh,
 	}, nil
+}
+
+// instancesConfig: stack i, from env (shared with the bootstrap).
+func instancesConfig() zitadel.InstancesConfig {
+	return zitadel.InstancesConfig{
+		ZitadelURL: env("ZITADEL_URL", "http://i-zitadel:8080"), ExternalDomain: env("ZITADEL_EXTERNAL_DOMAIN", "workforce.zitadel.internal"),
+		ExternalOrigin: env("ZITADEL_EXTERNAL_ORIGIN", "http://workforce.zitadel.internal:8080"), KeysDir: env("ZITADEL_KEYS_DIR", "/keys"),
+		IDDomain: env("ID_DOMAIN", "cs.internal"), IDPort: env("ID_PORT", "8096"),
+		RedirectURI: env("DRIVER_REDIRECT_URI", "http://localhost:3999/callback"),
+	}
+}
+
+func envInt(k string, def int) int {
+	var n int
+	if _, err := fmt.Sscanf(env(k, ""), "%d", &n); err != nil || n <= 0 {
+		return def
+	}
+	return n
 }
 
 func readJSON(path string, v any) error {

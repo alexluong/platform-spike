@@ -52,7 +52,6 @@ services:
       DATABASE_URL: postgres://postgres:postgres-h2-dev-pw@h2-postgres:5432/app?sslmode=disable
       IDP: oidcpool
       AUTHZ: spicedb
-      MULTI_MERCHANT: "1"
       SPICEDB_ENDPOINT: h2-spicedb:50051
       SPICEDB_KEY: spicedb-h2-dev-key
       # Issuers: PUBLIC_URL/oidc/<pool>. INTERNAL_URL: the app reaching itself for Sign in with

@@ -13,9 +13,11 @@ import (
 	"github.com/alexluong/platform-spike/go/internal/core"
 	"github.com/alexluong/platform-spike/go/internal/db"
 	"github.com/alexluong/platform-spike/go/internal/identity"
+	"github.com/alexluong/platform-spike/go/internal/modules/merchants"
 	"github.com/alexluong/platform-spike/go/internal/modules/scope"
 	"github.com/alexluong/platform-spike/go/internal/perm"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 type Module struct {
@@ -28,6 +30,15 @@ type Module struct {
 func (m *Module) pools() identity.TenantPools {
 	p, _ := m.IdP.(identity.TenantPools)
 	return p
+}
+
+// MarkPoolReady: the merchant's tenant pool is ready (called by adapters that provision it after
+// the merchant's transaction, stack i).
+func MarkPoolReady(ctx context.Context, q interface {
+	Exec(context.Context, string, ...any) (pgconn.CommandTag, error)
+}, merchantID string) error {
+	_, err := q.Exec(ctx, `UPDATE merchants SET pool_ready=true WHERE id=$1`, merchantID)
+	return err
 }
 
 type Merchant struct {
@@ -91,10 +102,18 @@ func (m *Module) createMerchant(ctx context.Context, r *core.Req) (any, error) {
 		return nil, err
 	}
 	// The merchant's tenant pool (SPEC §16.3), in this transaction when the adapter shares the
-	// app's DB: the merchant is created active with its pool, or not at all.
+	// app's DB (h2: created active with its pool, or not at all). Otherwise the adapter builds it
+	// from the merchant.created outbox row and the merchant shows "provisioning" until MarkPoolReady.
 	if p := m.pools(); p != nil {
-		if err := p.ProvisionMerchant(ctx, mer.ID); err != nil {
+		ready, err := p.ProvisionMerchant(ctx, mer.ID)
+		if err != nil {
 			return nil, fmt.Errorf("provision tenant pool: %w", err)
+		}
+		if !ready {
+			if _, err := r.Tx.Exec(ctx, `UPDATE merchants SET pool_ready=false WHERE id=$1`, mer.ID); err != nil {
+				return nil, err
+			}
+			mer.Status = "provisioning"
 		}
 	}
 	if err := r.Emit(ctx, authz.Event{Type: authz.EvMerchantCreated, MerchantID: mer.ID}); err != nil {
@@ -111,7 +130,7 @@ func (m *Module) createMerchant(ctx context.Context, r *core.Req) (any, error) {
 }
 
 func (m *Module) listMerchants(ctx context.Context, r *core.Req) (any, error) {
-	rows, err := r.Tx.Query(ctx, `SELECT id, name, status FROM merchants ORDER BY created_at DESC`)
+	rows, err := r.Tx.Query(ctx, `SELECT id, name, `+merchants.StatusSQL+` FROM merchants ORDER BY created_at DESC`)
 	if err != nil {
 		return nil, err
 	}

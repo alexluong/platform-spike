@@ -148,8 +148,13 @@ func qualify(poolID, sub string) string { return poolID + ":" + sub }
 
 // ProvisionMerchant creates the merchant's tenant pool in the caller's transaction (SPEC §16.3):
 // the pool row, its first signing key, and its federation client at the shop pool with the
-// client's secret kept (encrypted) on the pool. Rolled back with the merchant; nothing outside the DB.
-func (s *Issuer) ProvisionMerchant(ctx context.Context, merchantID string) error {
+// client's secret kept (encrypted) on the pool. Rolled back with the merchant; nothing outside the DB,
+// so the pool is ready at commit.
+func (s *Issuer) ProvisionMerchant(ctx context.Context, merchantID string) (bool, error) {
+	return true, s.provisionMerchant(ctx, merchantID)
+}
+
+func (s *Issuer) provisionMerchant(ctx context.Context, merchantID string) error {
 	q := db.TxOr(ctx, s.db)
 	id, fedID, secret := db.NewID("pl"), db.NewID("fed"), randToken()
 	h := sha256.Sum256([]byte(secret))
@@ -182,14 +187,16 @@ func (s *Issuer) SetMerchantSuspended(ctx context.Context, merchantID string, su
 	return err
 }
 
-// MerchantIssuer: the tenant issuer a storefront or admin UI starts a login at (SPEC §16.3).
-func (s *Issuer) MerchantIssuer(ctx context.Context, merchantID string) (string, error) {
+// PoolIdentity: the tenant issuer a storefront or admin UI starts a login at (SPEC §16.3).
+func (s *Issuer) PoolIdentity(ctx context.Context, merchantID string) (map[string]any, error) {
 	var id string
 	err := db.TxOr(ctx, s.db).QueryRow(ctx, `SELECT id FROM idp_pools WHERE merchant_id=$1`, merchantID).Scan(&id)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return "", identity.ErrNotFound
+		return nil, identity.ErrNotFound
+	} else if err != nil {
+		return nil, err
 	}
-	return s.issuerFor(id), err
+	return map[string]any{"issuer": s.issuerFor(id)}, nil
 }
 
 // CreateTenantUser: a password identity in the merchant's tenant pool, staff (kind user) or

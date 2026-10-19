@@ -27,7 +27,7 @@ import (
 func (e *env) merchant() (string, string) {
 	e.t.Helper()
 	mid := db.NewID("m")
-	if err := e.iss.ProvisionMerchant(context.Background(), mid); err != nil {
+	if err := e.iss.provisionMerchant(context.Background(), mid); err != nil {
 		e.t.Fatal(err)
 	}
 	var pool string
@@ -230,14 +230,14 @@ func TestTokensStayInTheirPool(t *testing.T) {
 	}
 	raw1 := strings.TrimPrefix(s1, p1+":")
 	for name, raw := range map[string]string{
-		"control: M1 key, M1 issuer":       sign(k1, claims(e.iss.issuerFor(p1), raw1, "storefront")),
-		"M1 key, M2 issuer":                sign(k1, claims(e.iss.issuerFor(p2), raw1, "storefront")),
-		"platform key, M1 issuer":          sign(kp, claims(e.iss.issuerFor(p1), raw1, "storefront")),
-		"M1 key, platform client":          sign(k1, claims(e.iss.issuerFor(p1), raw1, "platform-cli")),
-		"M1 key, machine-client shape":     sign(k1, claims(e.iss.issuerFor(p1), "cli_x", "cli_x")),
-		"M1 key, issuer with trailing /":   sign(k1, claims(e.iss.issuerFor(p1)+"/", raw1, "storefront")),
-		"M1 key, unknown pool issuer":      sign(k1, claims(e.iss.cfg.PublicURL+"/oidc/pl_nope", raw1, "storefront")),
-		"M1 key, issuer on another host":   sign(k1, claims("http://evil.example/oidc/"+p1, raw1, "storefront")),
+		"control: M1 key, M1 issuer":     sign(k1, claims(e.iss.issuerFor(p1), raw1, "storefront")),
+		"M1 key, M2 issuer":              sign(k1, claims(e.iss.issuerFor(p2), raw1, "storefront")),
+		"platform key, M1 issuer":        sign(kp, claims(e.iss.issuerFor(p1), raw1, "storefront")),
+		"M1 key, platform client":        sign(k1, claims(e.iss.issuerFor(p1), raw1, "platform-cli")),
+		"M1 key, machine-client shape":   sign(k1, claims(e.iss.issuerFor(p1), "cli_x", "cli_x")),
+		"M1 key, issuer with trailing /": sign(k1, claims(e.iss.issuerFor(p1)+"/", raw1, "storefront")),
+		"M1 key, unknown pool issuer":    sign(k1, claims(e.iss.cfg.PublicURL+"/oidc/pl_nope", raw1, "storefront")),
+		"M1 key, issuer on another host": sign(k1, claims("http://evil.example/oidc/"+p1, raw1, "storefront")),
 	} {
 		_, err := e.iss.Verify(context.Background(), raw)
 		if ok := err == nil; ok != strings.HasPrefix(name, "control") {
@@ -285,7 +285,7 @@ func TestProvisioningIsTransactional(t *testing.T) {
 	}
 	mid := db.NewID("m")
 	tx, _ := e.pool.Begin(ctx)
-	if err := e.iss.ProvisionMerchant(db.WithTx(ctx, tx), mid); err != nil {
+	if err := e.iss.provisionMerchant(db.WithTx(ctx, tx), mid); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := e.iss.CreateTenantUser(db.WithTx(ctx, tx), mid, uniq("x"), "pw", "user"); err != nil {
@@ -298,11 +298,11 @@ func TestProvisioningIsTransactional(t *testing.T) {
 	if n := count(mid); n != 0 {
 		t.Fatalf("rolled back, %d rows left", n)
 	}
-	if _, err := e.iss.MerchantIssuer(ctx, mid); err != identity.ErrNotFound {
+	if _, err := e.iss.PoolIdentity(ctx, mid); err != identity.ErrNotFound {
 		t.Fatalf("issuer of a rolled-back merchant: %v", err)
 	}
 	tx, _ = e.pool.Begin(ctx)
-	_ = e.iss.ProvisionMerchant(db.WithTx(ctx, tx), mid)
+	_ = e.iss.provisionMerchant(db.WithTx(ctx, tx), mid)
 	_ = tx.Commit(ctx)
 	if n := count(mid); n != 3 { // pool + federation client + key
 		t.Fatalf("committed: %d rows, want 3", n)

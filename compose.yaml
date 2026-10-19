@@ -11,3 +11,4 @@ include:
   - stacks/g/compose.yaml
   - stacks/h/compose.yaml
   - stacks/h2/compose.yaml
+  - stacks/i/compose.yaml

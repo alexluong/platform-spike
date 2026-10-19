@@ -186,7 +186,7 @@ func (e *Executor) precheck(ctx context.Context, q Querier, p *Principal, action
 	if !a.CheckableAt(perm.ScopeType(t.Resource.Type)) {
 		return &authz.Decision{Reason: ReasonScope}, nil
 	}
-	if t.MerchantID != "" && ((p.Kind == perm.KindUser && !p.IsMemberOf(t.MerchantID)) || (p.Kind == perm.KindAgent && p.MerchantID != t.MerchantID)) {
+	if t.MerchantID != "" && (p.Kind == perm.KindUser || p.Kind == perm.KindAgent) && !p.MemberOf(t.MerchantID) {
 		return &authz.Decision{Reason: ReasonTenant}, nil
 	}
 	// Apps have no merchant: their tenant boundary is the install. Check it in SQL too, so a

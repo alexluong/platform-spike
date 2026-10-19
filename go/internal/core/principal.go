@@ -28,10 +28,16 @@ type Principal struct {
 	ShopAccountID string
 }
 
-// IsMemberOf: a user's membership at merchant mid.
-func (p *Principal) IsMemberOf(mid string) bool {
+// MemberOf: users are checked against their memberships, agents against their merchant.
+func (p *Principal) MemberOf(merchantID string) bool {
+	if p.MerchantID == merchantID {
+		return merchantID != ""
+	}
+	if p.Kind == perm.KindAgent {
+		return false
+	}
 	for _, m := range p.MerchantIDs {
-		if m == mid {
+		if m == merchantID {
 			return true
 		}
 	}
@@ -57,19 +63,28 @@ func (a *Authenticator) Authenticate(ctx context.Context, header string) (*Princ
 	if err != nil {
 		return nil, err
 	}
-	// A principal of a merchant's own pool (SPEC §16.1) is accepted only with a token of
-	// that merchant's pool: the adapter puts the pool's merchant in t.MerchantID.
-	if p.HomeMerchantID != "" && t.MerchantID != p.HomeMerchantID {
-		return nil, ErrUnauthenticated
-	}
-	// A tenant claim in the token (IdPs with organizations) is an extra check, never the
-	// source: membership comes from the app's records. A token minted for a merchant the
-	// caller doesn't belong to now is stale: log in again. No claim, no check (tokens from
-	// before the user joined, IdPs without tenancy).
-	if t.MerchantID != "" && p.HomeMerchantID == "" && len(p.MerchantIDs) > 0 && !p.IsMemberOf(t.MerchantID) {
+	if !tokenFits(t, p) {
 		return nil, ErrUnauthenticated
 	}
 	return p, nil
+}
+
+// tokenFits: the token's tenant (if any) agrees with the principal.
+//   - A principal of a merchant's own pool (HomeMerchantID, SPEC §16.1) is accepted only with
+//     a token of that merchant's pool: pool-per-merchant adapters (h2, i) put the pool's
+//     merchant in t.MerchantID (from their directory, never a claim).
+//   - A tenant claim in the token (IdPs with organizations) is an extra check, never the
+//     source: membership comes from the app's records. A token minted for a merchant the
+//     caller doesn't belong to now is stale: log in again. No claim, no check (tokens from
+//     before the user joined, IdPs without tenancy).
+func tokenFits(t identity.Token, p *Principal) bool {
+	if p.HomeMerchantID != "" && t.MerchantID != p.HomeMerchantID {
+		return false
+	}
+	if t.MerchantID != "" && p.HomeMerchantID == "" && (p.MerchantID != "" || len(p.MerchantIDs) > 0) && !p.MemberOf(t.MerchantID) {
+		return false
+	}
+	return true
 }
 
 // LookupPrincipal finds the user, app or agent whose IdP subject is sub.
