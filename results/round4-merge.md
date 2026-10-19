@@ -58,3 +58,44 @@ type TenantPools interface {
 | f | 361/362, the 2 s grant-expiry test at load 26 (known: review-f); `agents.test.ts` rerun 20/20 |
 
 `go build`, `go vet`, `go test ./...` green; the DB-backed issuer tests (`oidcpool`, `oidcop`) also pass against a throwaway Postgres (`OIDC*_TEST_DATABASE_URL`).
+
+## Phase 2: option A remap (SPEC v4.1)
+
+Decided 2026-10-19 (ctrl identity-model.md §1): merchant staff are platform accounts in the platform pool's one shared merchant-users org, with owners and partners; membership and roles per merchant stay in the app. **Tenant pools hold customers only.**
+
+### Spec and suite
+
+- SPEC §16 → v4.1 (changelog entry): pools table; §16.2 drops "tenant staff belong to exactly one merchant"; §16.3 tenant template = org `customers`; §16.4 tenant test endpoint `kind: "customer"` only (`user` → 400); **staff = core `POST /api/_test/users {kind: user}` + owner's `POST /api/merchants/:mid/members`**, logging in with `loginUser`; `loginTenant(merchantId, email, password)` is customers-only.
+- Rules restated: 2 (staff are platform accounts: platform issuer, exact role, removal, not at non-member merchants, no `/api/platform/*`, no tenant login, `kind: user` → 400), 4 (same email as staff and as tenant customer = two accounts), 5 (staff of M1 on M2), 8 (a suspended merchant's staff still log in and get 403 `merchant_suspended` there, old and new tokens; act normally at their other merchants), 9 (tenant customer logins).
+- `multi-pool.test.ts` still 39 tests (two v4 "staff vs customer login inside one pool" tests dropped; new: `kind: user` → 400, staff at the tenant login rejects, staff suspension login). Helpers: `newStaff`, `newTenantCustomer`, `createTenantCustomer`. AMBIGUITIES R3/R4/R6/R8/R9 restated, R14 new.
+- Port: `CreateTenantUser(…, kind)` → `CreateTenantCustomer(ctx, mid, email, password)`.
+
+### What changed per stack (LOC vs phase 1 `f1d54b8`)
+
+| | added | removed | what |
+|---|---|---|---|
+| **h2** adapter (non-test) | 35 | 63 | staff login client (`merchant-admin`) and user groups gone: `idp_users.user_group` dropped (unique per pool + email), `loginGroup` switch → `isLoginClient` bool, rate-limit key per pool, `STAFF_CLIENT_ID` env gone |
+| h2 adapter tests | 23 | 27 | `TestTenantGroupsApart` → `TestTenantPoolCustomersOnly` |
+| h2 driver | 6 | 6 | one tenant client |
+| **i** adapter + driver | 18 | 24 | tenant instance's first and only org is `customers` (one org-create call fewer per merchant, login app in `customers`), customer creation only |
+| shared (core, identity, modules, migration comments) | 25 | 40 | `CanJoin` and merchant create lose the tenant-staff checks; test support loses the staff membership branch; `TestTokenFits` cases for staff as platform accounts |
+| conformance (src, tests, docs) | 150 | 147 | above |
+
+**Simpler:** tenant pools have one kind of user, so h2 needs no user groups or second client and i one org per instance; staff have one login, one issuer and one place for MFA (the platform pool: review-i #3 now applies there only); the app's tenant rule (`HomeMerchantID` = issuing pool) covers customers only. A merchant's staff list is memberships, as for partners.
+**Harder / changed:** suspending a merchant no longer cuts staff logins at the IdP (they're platform accounts); only the app's `merchant_suspended` stops them at that merchant (already core §7 and enforced). In i, a wrong-pool login (staff at a tenant login) takes up to ~8 s to reject (the login stand-in retries the user search 40 × 200 ms for projection lag).
+
+### Results (same setup as phase 1; everything r4m removed after)
+
+| stack | result |
+|---|---|
+| h2 | **401/401**, 91 s (load ~27) |
+| i | run 1 at load 39–51: 387/401, 14 timeouts (3 multi-pool, rest core logins); `multi-pool.test.ts` rerun **39/39**; full rerun at load 34–38: **400/401**, the 2 s grant-expiry test (known load flake), `agents.test.ts` rerun 20/20 |
+| h (shared-layer regression) | **362/362** core |
+
+`go vet`, `go test ./...` green; `oidcpool` DB tests 27/27 against a throwaway Postgres (fresh database: the edited `101` migration needs one).
+
+### Open
+
+- Review/bench tools still drive the v4 layout (staff in tenant pools): `stacks/h2/bench.mjs`, `stacks/h2/review-probe.mjs`, `conformance/review-i/probe.test.ts`. They reproduce round-4 evidence; not updated.
+- h2's `101_pool_issuer.sql` was edited in place (no deployed databases outside the spike): an existing h2 volume must be recreated (`down -v`).
+- Main's running `ps-h2` still runs the pre-merge image; rebuild after merging.
