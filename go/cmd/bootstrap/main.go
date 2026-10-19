@@ -14,6 +14,7 @@ import (
 
 	"github.com/alexluong/platform-spike/go/internal/adapters/logto"
 	"github.com/alexluong/platform-spike/go/internal/adapters/oidcop"
+	"github.com/alexluong/platform-spike/go/internal/adapters/oidcpool"
 	"github.com/alexluong/platform-spike/go/internal/adapters/openfga"
 	"github.com/alexluong/platform-spike/go/internal/adapters/ory"
 	"github.com/alexluong/platform-spike/go/internal/adapters/spicedb"
@@ -55,6 +56,18 @@ func rotateSigningKey(ctx context.Context, log *slog.Logger) error {
 		return err
 	}
 	defer pool.Close()
+	if env("IDP", "") == "oidcpool" {
+		// stack h2: `bootstrap rotate-signing-key [pool]`; no pool = every pool
+		poolID := ""
+		if len(os.Args) > 2 {
+			poolID = os.Args[2]
+		}
+		if err := oidcpool.Rotate(ctx, pool, os.Getenv("ISSUER_SECRET"), poolID, ahead, retire); err != nil {
+			return err
+		}
+		log.Info("signing keys rotated", "pool", poolID, "signsAfter", ahead, "oldRetireAfter", retire)
+		return nil
+	}
 	if err := oidcop.Rotate(ctx, pool, os.Getenv("ISSUER_SECRET"), ahead, retire); err != nil {
 		return err
 	}
@@ -179,6 +192,19 @@ func run(log *slog.Logger) error {
 		}
 		log.Info("issuer migrations applied")
 		out = map[string]any{"idp": "oidcop"}
+	case "oidcpool":
+		// Stack h2: the issuer's tables and the three platform-level pools; the server creates
+		// their first keys at start, tenant pools come with their merchants.
+		pool, err := db.Open(ctx, env("DATABASE_URL", "postgres://app:app@localhost:5432/app"))
+		if err != nil {
+			return err
+		}
+		defer pool.Close()
+		if err := oidcpool.Migrate(ctx, pool); err != nil {
+			return fmt.Errorf("issuer migrations: %w", err)
+		}
+		log.Info("issuer migrations applied")
+		out = map[string]any{"idp": "oidcpool"}
 	default:
 		return fmt.Errorf("unknown IDP %q", os.Getenv("IDP"))
 	}

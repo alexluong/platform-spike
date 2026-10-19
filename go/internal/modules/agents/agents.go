@@ -38,21 +38,32 @@ func (m *Module) Ops() []core.Op {
 
 // register: any merchant user (SPEC §9).
 func (m *Module) register(ctx context.Context, r *core.Req) (any, error) {
-	if r.P.Kind != perm.KindUser || r.P.MerchantID == "" {
+	var in struct {
+		Name       string `json:"name"`
+		MerchantID string `json:"merchantId"` // partners in several merchants (SPEC §16.2) name one
+	}
+	if err := r.Decode(&in); err != nil {
+		return nil, err
+	}
+	if r.P.Kind != perm.KindUser || len(r.P.MerchantIDs) == 0 {
 		return nil, core.ErrForbidden
 	}
+	mid := r.P.MerchantID
+	if in.MerchantID != "" {
+		if !r.P.IsMemberOf(in.MerchantID) {
+			return nil, core.ErrForbidden
+		}
+		mid = in.MerchantID
+	}
+	if mid == "" {
+		return nil, core.BadInput("merchantId is required for a member of several merchants")
+	}
 	var status string
-	if err := r.Tx.QueryRow(ctx, `SELECT status FROM merchants WHERE id=$1`, r.P.MerchantID).Scan(&status); err != nil {
+	if err := r.Tx.QueryRow(ctx, `SELECT status FROM merchants WHERE id=$1`, mid).Scan(&status); err != nil {
 		return nil, err
 	}
 	if status == "suspended" {
 		return nil, core.ErrMerchantSuspended
-	}
-	var in struct {
-		Name string `json:"name"`
-	}
-	if err := r.Decode(&in); err != nil {
-		return nil, err
 	}
 	if strings.TrimSpace(in.Name) == "" {
 		return nil, core.BadInput("name is required")
@@ -61,15 +72,15 @@ func (m *Module) register(ctx context.Context, r *core.Req) (any, error) {
 	// The IdP call can't join the transaction. IdPs with tenancy create the client disabled
 	// and enable it from the agent.registered outbox row, so a rolled-back registration
 	// leaves an inert client (review-a finding 12).
-	c, err := m.IdP.CreateClient(ctx, id, r.P.MerchantID)
+	c, err := m.IdP.CreateClient(ctx, id, mid)
 	if err != nil {
 		return nil, err
 	}
 	if _, err := r.Tx.Exec(ctx, `INSERT INTO agents(id, merchant_id, owner_user_id, name, client_id, idp_subject) VALUES ($1,$2,$3,$4,$5,$6)`,
-		id, r.P.MerchantID, r.P.ID, strings.TrimSpace(in.Name), c.ClientID, c.Subject); err != nil {
+		id, mid, r.P.ID, strings.TrimSpace(in.Name), c.ClientID, c.Subject); err != nil {
 		return nil, err
 	}
-	if err := r.Emit(ctx, authz.Event{Type: authz.EvAgentRegistered, MerchantID: r.P.MerchantID, AgentID: id, Subject: c.Subject}); err != nil {
+	if err := r.Emit(ctx, authz.Event{Type: authz.EvAgentRegistered, MerchantID: mid, AgentID: id, Subject: c.Subject}); err != nil {
 		return nil, err
 	}
 	return map[string]any{"id": id, "clientId": c.ClientID, "clientSecret": c.ClientSecret}, nil

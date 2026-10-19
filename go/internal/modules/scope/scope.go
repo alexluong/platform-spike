@@ -53,15 +53,18 @@ type Order struct {
 	Status        string `json:"status"`
 	RefundedCents int64  `json:"refundedCents"`
 	MerchantID    string `json:"-"`
+	// MerchantCustomerID: the merchant's customer record the order belongs to (SPEC §16.5): the
+	// placing customer, or for a Shop-token order the merchant's record linked to that account.
+	MerchantCustomerID string `json:"-"`
 }
 
-const OrderCols = `id, store_id, customer_id, items, total_cents, status, refunded_cents, merchant_id`
+const OrderCols = `id, store_id, customer_id, items, total_cents, status, refunded_cents, merchant_id, coalesce(merchant_customer_id, '')`
 
 // ScanOrder scans OrderCols.
 func ScanOrder(row pgx.Row) (*Order, error) {
 	var o Order
 	var items []byte
-	if err := row.Scan(&o.ID, &o.StoreID, &o.CustomerID, &items, &o.TotalCents, &o.Status, &o.RefundedCents, &o.MerchantID); err != nil {
+	if err := row.Scan(&o.ID, &o.StoreID, &o.CustomerID, &items, &o.TotalCents, &o.Status, &o.RefundedCents, &o.MerchantID, &o.MerchantCustomerID); err != nil {
 		return nil, err
 	}
 	if err := json.Unmarshal(items, &o.Items); err != nil {

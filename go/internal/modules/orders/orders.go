@@ -12,6 +12,7 @@ import (
 	"github.com/alexluong/platform-spike/go/internal/authz"
 	"github.com/alexluong/platform-spike/go/internal/core"
 	"github.com/alexluong/platform-spike/go/internal/db"
+	"github.com/alexluong/platform-spike/go/internal/modules/customers"
 	"github.com/alexluong/platform-spike/go/internal/modules/scope"
 	"github.com/alexluong/platform-spike/go/internal/perm"
 	"github.com/jackc/pgx/v5"
@@ -70,12 +71,25 @@ func (m *Module) place(ctx context.Context, r *core.Req) (any, error) {
 	if r.P.Kind != perm.KindCustomer {
 		return nil, core.ErrForbidden
 	}
+	// A merchant's own customer (tenant pool, SPEC §16.1) orders at that merchant's stores only.
+	if r.P.HomeMerchantID != "" && r.P.HomeMerchantID != r.Target.MerchantID {
+		return nil, core.ErrForbidden
+	}
 	var status string
 	if err := r.Tx.QueryRow(ctx, `SELECT status FROM merchants WHERE id=$1`, r.Target.MerchantID).Scan(&status); err != nil {
 		return nil, err
 	}
 	if status == "suspended" {
 		return nil, core.ErrMerchantSuspended
+	}
+	// The order belongs to the merchant's customer record: the caller itself, or for a Shop
+	// account the merchant's record linked to it, created on its first order (SPEC §16.5).
+	merchantCustomer := r.P.ID
+	if r.P.HomeMerchantID == "" {
+		var err error
+		if merchantCustomer, err = customers.EnsureShopCustomer(ctx, r.Tx, r.Target.MerchantID, r.P.ID); err != nil {
+			return nil, err
+		}
 	}
 	var in struct {
 		Items []struct {
@@ -109,8 +123,8 @@ func (m *Module) place(ctx context.Context, r *core.Req) (any, error) {
 		o.TotalCents = line
 	}
 	items, _ := json.Marshal(o.Items)
-	_, err := r.Tx.Exec(ctx, `INSERT INTO orders(id, merchant_id, store_id, customer_id, items, total_cents, status) VALUES ($1,$2,$3,$4,$5,$6,'pending')`,
-		o.ID, r.Target.MerchantID, o.StoreID, o.CustomerID, items, o.TotalCents)
+	_, err := r.Tx.Exec(ctx, `INSERT INTO orders(id, merchant_id, store_id, customer_id, items, total_cents, status, merchant_customer_id) VALUES ($1,$2,$3,$4,$5,$6,'pending',$7)`,
+		o.ID, r.Target.MerchantID, o.StoreID, o.CustomerID, items, o.TotalCents, merchantCustomer)
 	return o, err
 }
 
@@ -137,8 +151,17 @@ func (m *Module) listStore(ctx context.Context, r *core.Req) (any, error) {
 
 func (m *Module) get(ctx context.Context, r *core.Req) (any, error) {
 	o := scope.OrderOf(r)
-	if r.P.Kind == perm.KindCustomer && o.CustomerID != r.P.ID {
-		return nil, core.ErrNotFound // order.view_own
+	if r.P.Kind == perm.KindCustomer {
+		mine := o.CustomerID == r.P.ID || o.MerchantCustomerID == r.P.ID
+		if !mine && r.P.HomeMerchantID == "" && o.MerchantCustomerID != "" {
+			// a Shop account sees its orders at every merchant, through the linked records
+			if err := r.Tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM users WHERE id=$1 AND shop_account_id=$2)`, o.MerchantCustomerID, r.P.ID).Scan(&mine); err != nil {
+				return nil, err
+			}
+		}
+		if !mine {
+			return nil, core.ErrNotFound // order.view_own
+		}
 	}
 	return o, nil
 }
@@ -147,7 +170,14 @@ func (m *Module) mine(ctx context.Context, r *core.Req) (any, error) {
 	if r.P.Kind != perm.KindCustomer {
 		return nil, core.ErrForbidden
 	}
-	return collect(r.Tx.Query(ctx, `SELECT `+scope.OrderCols+` FROM orders WHERE customer_id=$1 ORDER BY created_at`, r.P.ID))
+	if r.P.HomeMerchantID != "" {
+		// a merchant's own customer: that merchant's orders of its record (incl. Shop-token orders
+		// there when the record is linked to a Shop account)
+		return collect(r.Tx.Query(ctx, `SELECT `+scope.OrderCols+` FROM orders WHERE merchant_customer_id=$1 ORDER BY created_at`, r.P.ID))
+	}
+	// a Shop account: its own orders and every linked record's, at every merchant
+	return collect(r.Tx.Query(ctx, `SELECT `+scope.OrderCols+` FROM orders WHERE customer_id=$1
+		OR merchant_customer_id IN (SELECT id FROM users WHERE shop_account_id=$1) ORDER BY created_at`, r.P.ID))
 }
 
 func (m *Module) cancel(ctx context.Context, r *core.Req) (any, error) {

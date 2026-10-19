@@ -4,6 +4,7 @@ package platform
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 	"time"
@@ -19,6 +20,14 @@ import (
 
 type Module struct {
 	IdP identity.Provisioner
+	// MultiMerchant: an owner may already be a member of other merchants (SPEC §16.2).
+	MultiMerchant bool
+}
+
+// pools: the adapter's tenant pools, when it has them (SPEC §16).
+func (m *Module) pools() identity.TenantPools {
+	p, _ := m.IdP.(identity.TenantPools)
+	return p
 }
 
 type Merchant struct {
@@ -54,17 +63,19 @@ func (m *Module) createMerchant(ctx context.Context, r *core.Req) (any, error) {
 		return nil, core.BadInput("name and ownerUserId are required")
 	}
 	var kind, subject string
-	var current *string
-	err := r.Tx.QueryRow(ctx, `SELECT kind, merchant_id, idp_subject FROM users WHERE id=$1 FOR UPDATE`, in.OwnerUserID).Scan(&kind, &current, &subject)
+	var home *string
+	var memberships int
+	err := r.Tx.QueryRow(ctx, `SELECT kind, home_merchant_id, coalesce(idp_subject,''), (SELECT count(*) FROM memberships WHERE user_id=u.id)
+		FROM users u WHERE id=$1 FOR UPDATE`, in.OwnerUserID).Scan(&kind, &home, &subject, &memberships)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, core.E(http.StatusBadRequest, "invalid_input", "owner user not found")
 	} else if err != nil {
 		return nil, err
 	}
-	if kind != string(perm.KindUser) {
-		return nil, core.BadInput("owner must be a merchant user")
+	if kind != string(perm.KindUser) || home != nil {
+		return nil, core.BadInput("owner must be a merchant user (a platform account)")
 	}
-	if current != nil {
+	if memberships > 0 && !m.MultiMerchant {
 		return nil, core.Conflict("already_member")
 	}
 	mer := Merchant{ID: db.NewID("m"), Name: in.Name, Status: "active"}
@@ -72,12 +83,19 @@ func (m *Module) createMerchant(ctx context.Context, r *core.Req) (any, error) {
 	if _, err := r.Tx.Exec(ctx, `INSERT INTO merchants(id, name, status) VALUES ($1,$2,'active')`, mer.ID, mer.Name); err != nil {
 		return nil, err
 	}
-	if _, err := r.Tx.Exec(ctx, `UPDATE users SET merchant_id=$2 WHERE id=$1`, in.OwnerUserID, mer.ID); err != nil {
+	if _, err := r.Tx.Exec(ctx, `INSERT INTO memberships(user_id, merchant_id) VALUES ($1,$2)`, in.OwnerUserID, mer.ID); err != nil {
 		return nil, err
 	}
 	if _, err := r.Tx.Exec(ctx, `INSERT INTO role_assignments(id, merchant_id, user_id, role_id, scope_type, scope_id) VALUES ($1,$2,$3,'owner','merchant',$2)`,
 		aid, mer.ID, in.OwnerUserID); err != nil {
 		return nil, err
+	}
+	// The merchant's tenant pool (SPEC §16.3), in this transaction when the adapter shares the
+	// app's DB: the merchant is created active with its pool, or not at all.
+	if p := m.pools(); p != nil {
+		if err := p.ProvisionMerchant(ctx, mer.ID); err != nil {
+			return nil, fmt.Errorf("provision tenant pool: %w", err)
+		}
 	}
 	if err := r.Emit(ctx, authz.Event{Type: authz.EvMerchantCreated, MerchantID: mer.ID}); err != nil {
 		return nil, err
@@ -117,6 +135,11 @@ func (m *Module) setStatus(status string) func(context.Context, *core.Req) (any,
 			return nil, core.ErrNotFound
 		} else if err != nil {
 			return nil, err
+		}
+		if p := m.pools(); p != nil {
+			if err := p.SetMerchantSuspended(ctx, mid, status == "suspended"); err != nil {
+				return nil, err
+			}
 		}
 		ev := authz.EvMerchantReinstated
 		if status == "suspended" {
