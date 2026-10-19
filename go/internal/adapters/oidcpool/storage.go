@@ -111,7 +111,7 @@ func (s *Issuer) CreateAuthRequest(ctx context.Context, r *oidc.AuthRequest, _ s
 	}
 	// A federation client (a tenant pool at the shop pool) gets tokens for itself only, never
 	// for the API: the Shop access token it receives can't be replayed at /api.
-	if p := poolFrom(ctx); p != nil && s.loginGroup(p, r.ClientID) == "" {
+	if p := poolFrom(ctx); p != nil && !s.isLoginClient(p, r.ClientID) {
 		a.Audience = []string{r.ClientID}
 	}
 	b, _ := json.Marshal(a)
@@ -383,7 +383,7 @@ func (s *Issuer) GetClientByClientID(ctx context.Context, id string) (op.Client,
 	if p == nil {
 		return nil, errNotFound
 	}
-	if s.loginGroup(p, id) != "" {
+	if s.isLoginClient(p, id) {
 		return s.loginClient(p, id), nil
 	}
 	var kind string

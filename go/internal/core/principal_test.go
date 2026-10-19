@@ -11,7 +11,6 @@ import (
 // (stack i used to set no Token.MerchantID, so this rule, which h2 relies on, did not exist
 // for i; merged with h2's core it would also have locked every i tenant principal out).
 func TestTokenFits(t *testing.T) {
-	staff := &Principal{Kind: perm.KindUser, HomeMerchantID: "m1", MerchantIDs: []string{"m1"}, MerchantID: "m1"}
 	customer := &Principal{Kind: perm.KindCustomer, HomeMerchantID: "m1"}
 	partner := &Principal{Kind: perm.KindUser, MerchantIDs: []string{"m1", "m2"}}
 	shop := &Principal{Kind: perm.KindCustomer}
@@ -21,13 +20,11 @@ func TestTokenFits(t *testing.T) {
 		p    *Principal
 		want bool
 	}{
-		{"tenant staff, own pool", identity.Token{MerchantID: "m1"}, staff, true},
-		{"tenant staff, other pool", identity.Token{MerchantID: "m2"}, staff, false},
-		{"tenant staff, platform-level token", identity.Token{}, staff, false},
 		{"tenant customer, own pool", identity.Token{MerchantID: "m1"}, customer, true},
 		{"tenant customer, other pool", identity.Token{MerchantID: "m2"}, customer, false},
 		{"tenant customer, platform-level token", identity.Token{}, customer, false},
-		{"tenant staff removed from its merchant, own pool", identity.Token{MerchantID: "m1"}, &Principal{Kind: perm.KindUser, HomeMerchantID: "m1"}, true},
+		{"staff (platform account), platform token", identity.Token{}, &Principal{Kind: perm.KindUser, MerchantIDs: []string{"m1"}, MerchantID: "m1"}, true},
+		{"staff (platform account), a tenant pool's token", identity.Token{MerchantID: "m2"}, &Principal{Kind: perm.KindUser, MerchantIDs: []string{"m1"}, MerchantID: "m1"}, false},
 		{"partner, no tenant in token", identity.Token{}, partner, true},
 		{"partner, org claim of a member merchant", identity.Token{MerchantID: "m2"}, partner, true},
 		{"partner, org claim of another merchant", identity.Token{MerchantID: "m3"}, partner, false},

@@ -59,8 +59,9 @@ func (m *Module) homeRealm(ctx context.Context, r *core.Req) (any, error) {
 	return map[string]any{"kinds": kinds}, rows.Err()
 }
 
-// createTenantUser (SPEC §16.4): an identity in the merchant's own pool and the app record.
-// kind user = the merchant's staff (a member with no roles); customer = its customer.
+// createTenantUser (SPEC §16.4, v4.1): a customer identity in the merchant's own pool and its app
+// record. Tenant pools hold customers only: staff are platform accounts (POST /api/_test/users
+// kind user, then POST /api/merchants/:mid/members).
 func (m *Module) createTenantUser(ctx context.Context, r *core.Req) (any, error) {
 	if err := m.check(r); err != nil {
 		return nil, err
@@ -78,8 +79,8 @@ func (m *Module) createTenantUser(ctx context.Context, r *core.Req) (any, error)
 		return nil, err
 	}
 	in.Email = strings.ToLower(strings.TrimSpace(in.Email))
-	if in.Email == "" || in.Password == "" || (in.Kind != string(perm.KindUser) && in.Kind != string(perm.KindCustomer)) {
-		return nil, core.BadInput("email, password and kind (user | customer) are required")
+	if in.Email == "" || in.Password == "" || in.Kind != string(perm.KindCustomer) {
+		return nil, core.BadInput("email, password and kind \"customer\" are required (staff are platform accounts)")
 	}
 	mid := r.Path("mid")
 	var exists bool
@@ -96,7 +97,7 @@ func (m *Module) createTenantUser(ctx context.Context, r *core.Req) (any, error)
 	if exists {
 		return nil, core.Conflict("email_taken")
 	}
-	sub, err := pools.CreateTenantUser(ctx, mid, in.Email, in.Password, in.Kind)
+	sub, err := pools.CreateTenantCustomer(ctx, mid, in.Email, in.Password)
 	if errors.Is(err, identity.ErrNotFound) {
 		return nil, core.ErrNotFound
 	} else if err != nil {
@@ -106,14 +107,6 @@ func (m *Module) createTenantUser(ctx context.Context, r *core.Req) (any, error)
 	if _, err := r.Tx.Exec(ctx, `INSERT INTO users(id, idp_subject, email, kind, home_merchant_id) VALUES ($1,$2,$3,$4,$5)`,
 		id, sub, in.Email, in.Kind, mid); err != nil {
 		return nil, conflictOr(err)
-	}
-	if in.Kind == string(perm.KindUser) {
-		if _, err := r.Tx.Exec(ctx, `INSERT INTO memberships(user_id, merchant_id) VALUES ($1,$2)`, id, mid); err != nil {
-			return nil, err
-		}
-		if err := r.Emit(ctx, authz.Event{Type: authz.EvMemberAdded, MerchantID: mid, UserID: id, Subject: sub}); err != nil {
-			return nil, err
-		}
 	}
 	return map[string]any{"id": id, "email": in.Email}, nil
 }

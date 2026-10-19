@@ -29,10 +29,6 @@ const (
 	kindShop      = "shop"
 	kindTenant    = "tenant"
 
-	groupDefault   = "default"   // workforce, platform, shop
-	groupStaff     = "staff"     // a tenant pool's staff
-	groupCustomers = "customers" // a tenant pool's customers
-
 	dirTTL = 30 * time.Second
 )
 
@@ -199,13 +195,9 @@ func (s *Issuer) PoolIdentity(ctx context.Context, merchantID string) (map[strin
 	return map[string]any{"issuer": s.issuerFor(id)}, nil
 }
 
-// CreateTenantUser: a password identity in the merchant's tenant pool, staff (kind user) or
-// customers (kind customer), in the caller's transaction (SPEC §16.4).
-func (s *Issuer) CreateTenantUser(ctx context.Context, merchantID, email, password, kind string) (string, error) {
-	group := map[string]string{"user": groupStaff, "customer": groupCustomers}[kind]
-	if group == "" {
-		return "", errors.New("oidcpool: tenant users are user or customer")
-	}
+// CreateTenantCustomer: a password customer in the merchant's tenant pool, in the caller's
+// transaction (SPEC §16.4; tenant pools hold customers only).
+func (s *Issuer) CreateTenantCustomer(ctx context.Context, merchantID, email, password string) (string, error) {
 	q := db.TxOr(ctx, s.db)
 	var poolID string
 	if err := q.QueryRow(ctx, `SELECT id FROM idp_pools WHERE merchant_id=$1`, merchantID).Scan(&poolID); err != nil {
@@ -215,8 +207,8 @@ func (s *Issuer) CreateTenantUser(ctx context.Context, merchantID, email, passwo
 		return "", err
 	}
 	id := db.NewID("idu")
-	if _, err := q.Exec(ctx, `INSERT INTO idp_users(id, pool_id, user_group, email, password_hash) VALUES ($1,$2,$3,$4,$5)`,
-		id, poolID, group, normEmail(email), hashPassword(password)); err != nil {
+	if _, err := q.Exec(ctx, `INSERT INTO idp_users(id, pool_id, email, password_hash) VALUES ($1,$2,$3,$4)`,
+		id, poolID, normEmail(email), hashPassword(password)); err != nil {
 		return "", err
 	}
 	return qualify(poolID, id), nil

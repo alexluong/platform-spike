@@ -4,10 +4,11 @@ package zitadel
 //
 // One Zitadel deployment, many instances (rows in one Postgres):
 //   - workforce: the first instance (org "staff"): platform staff.
-//   - platform:  orgs "accounts" (merchant owners, partners; also the apps' and agents'
+//   - platform:  orgs "accounts" (merchant owners, staff, partners; also the apps' and agents'
 //                machine users) and "shop" (Shop buyers).
 //   - one instance per merchant, created when the merchant is (outbox event merchant.created,
-//     background consumer): orgs "staff" and "customers", a login project/app, and a generic
+//     background consumer): its first and only org "customers" (SPEC v4.1: merchant staff are
+//     platform accounts in "accounts"), a login project/app, and a generic
 //     OIDC IdP "Shop" on "customers" pointing at the platform instance (Sign in with Shop),
 //     with a matching OIDC app per merchant in the platform instance.
 //
@@ -492,20 +493,17 @@ func (x *Instances) provisionMerchant(ctx context.Context, mid string) error {
 		return err
 	}
 	if p.InstanceID == "" {
-		if p.InstanceID, err = x.createInstance(ctx, p, "staff"); err != nil {
+		if p.InstanceID, err = x.createInstance(ctx, p, "customers"); err != nil {
 			return fmt.Errorf("create instance: %w", err)
 		}
 		if err := x.save(ctx, p); err != nil {
 			return err
 		}
 	}
-	if p.Orgs["staff"] == "" {
-		if p.Orgs["staff"], err = x.waitInstance(ctx, p); err != nil {
+	if p.Orgs["customers"] == "" {
+		if p.Orgs["customers"], err = x.waitInstance(ctx, p); err != nil {
 			return err
 		}
-	}
-	if p.Orgs["customers"], err = x.ensureOrg(ctx, p, "customers"); err != nil {
-		return fmt.Errorf("customers org: %w", err)
 	}
 	if err := x.save(ctx, p); err != nil {
 		return err
@@ -513,7 +511,7 @@ func (x *Instances) provisionMerchant(ctx context.Context, mid string) error {
 	if err := x.addTrustedDomain(ctx, p); err != nil {
 		return fmt.Errorf("trusted domain: %w", err)
 	}
-	if err := x.ensureLogin(ctx, p, p.Orgs["staff"]); err != nil {
+	if err := x.ensureLogin(ctx, p, p.Orgs["customers"]); err != nil {
 		return fmt.Errorf("login app: %w", err)
 	}
 	if err := x.save(ctx, p); err != nil {
@@ -771,19 +769,15 @@ func (x *Instances) CreateUser(ctx context.Context, email, password, kind string
 	return subject(poolKey, id), nil
 }
 
-// CreatePoolUser: SPEC §16.4, an identity in the merchant's own instance.
-func (x *Instances) CreateTenantUser(ctx context.Context, merchantID, email, password, kind string) (string, error) {
+// CreateTenantCustomer: SPEC §16.4, a customer in the merchant's own instance (org customers).
+func (x *Instances) CreateTenantCustomer(ctx context.Context, merchantID, email, password string) (string, error) {
 	p, err := x.PoolByKey(ctx, MerchantPool(merchantID))
 	if errors.Is(err, pgx.ErrNoRows) || (err == nil && p.Status != "active") {
 		return "", fmt.Errorf("merchant %s: identity pool not ready", merchantID)
 	} else if err != nil {
 		return "", err
 	}
-	org := "staff"
-	if kind == "customer" {
-		org = "customers"
-	}
-	id, err := x.createHuman(ctx, p, p.Orgs[org], org+"."+email, email, password)
+	id, err := x.createHuman(ctx, p, p.Orgs["customers"], "customers."+email, email, password)
 	if err != nil {
 		return "", err
 	}

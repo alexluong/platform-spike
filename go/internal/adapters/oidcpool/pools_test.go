@@ -37,9 +37,9 @@ func (e *env) merchant() (string, string) {
 	return mid, pool
 }
 
-func (e *env) tenantUser(mid, kind, email, pw string) string {
+func (e *env) tenantCustomer(mid, email, pw string) string {
 	e.t.Helper()
-	sub, err := e.iss.CreateTenantUser(context.Background(), mid, email, pw, kind)
+	sub, err := e.iss.CreateTenantCustomer(context.Background(), mid, email, pw)
 	if err != nil {
 		e.t.Fatal(err)
 	}
@@ -164,8 +164,8 @@ func TestTokensStayInTheirPool(t *testing.T) {
 	m1, p1 := e.merchant()
 	m2, p2 := e.merchant()
 	email := uniq("same")
-	s1 := e.tenantUser(m1, "customer", email, "pw-m1")
-	s2 := e.tenantUser(m2, "customer", email, "pw-m2")
+	s1 := e.tenantCustomer(m1, email, "pw-m1")
+	s2 := e.tenantCustomer(m2, email, "pw-m2")
 	if s1 == s2 || !strings.HasPrefix(s1, p1+":") || !strings.HasPrefix(s2, p2+":") {
 		t.Fatalf("subjects %s %s", s1, s2)
 	}
@@ -246,21 +246,22 @@ func TestTokensStayInTheirPool(t *testing.T) {
 	}
 }
 
-func TestTenantGroupsApart(t *testing.T) {
+// SPEC v4.1: a tenant pool holds customers only, through the storefront client; merchant staff
+// are platform accounts and have no identity or client there.
+func TestTenantPoolCustomersOnly(t *testing.T) {
 	e := newEnv(t)
 	m, p := e.merchant()
-	staff, cust := uniq("staff"), uniq("cust")
-	e.tenantUser(m, "user", staff, "pw-s")
-	e.tenantUser(m, "customer", cust, "pw-c")
+	cust, staff := uniq("cust"), uniq("staff")
+	e.tenantCustomer(m, cust, "pw-c")
+	e.user(staff, "pw-s") // a platform account
 	cases := []struct {
 		client, email, pw string
 		ok                bool
 	}{
-		{"merchant-admin", staff, "pw-s", true},
 		{"storefront", cust, "pw-c", true},
-		{"storefront", staff, "pw-s", false},
-		{"merchant-admin", cust, "pw-c", false},
-		{"platform-cli", staff, "pw-s", false}, // not a client of a tenant pool
+		{"storefront", staff, "pw-s", false},    // platform accounts aren't tenant identities
+		{"merchant-admin", cust, "pw-c", false}, // no staff client any more
+		{"platform-cli", cust, "pw-c", false},   // not a client of a tenant pool
 	}
 	for _, c := range cases {
 		st, _ := e.loginAt(p, c.client, c.email, c.pw)
@@ -288,7 +289,7 @@ func TestProvisioningIsTransactional(t *testing.T) {
 	if err := e.iss.provisionMerchant(db.WithTx(ctx, tx), mid); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := e.iss.CreateTenantUser(db.WithTx(ctx, tx), mid, uniq("x"), "pw", "user"); err != nil {
+	if _, err := e.iss.CreateTenantCustomer(db.WithTx(ctx, tx), mid, uniq("x"), "pw"); err != nil {
 		t.Fatal(err)
 	}
 	if n := count(mid); n != 0 {
@@ -314,7 +315,7 @@ func TestSuspendedPool(t *testing.T) {
 	ctx := context.Background()
 	m, p := e.merchant()
 	email := uniq("c")
-	e.tenantUser(m, "customer", email, "pw")
+	e.tenantCustomer(m, email, "pw")
 	st, tok := e.loginAt(p, "storefront", email, "pw")
 	if st != 200 {
 		t.Fatal(st)
@@ -491,19 +492,14 @@ func TestSignInWithShop(t *testing.T) {
 	if cb, st := e.shopLeg(shopAuth, buyer, "wrong"); cb != nil || st != 401 {
 		t.Fatalf("wrong shop password: %d", st)
 	}
-	// Sign in with Shop only from the customers' client (not staff), only at tenant pools
-	_, c := pkce()
-	id, _ := e.requestAt(p, "merchant-admin", c)
-	if res := e.get("/oidc/" + p + "/login/shop?id=" + id); res.StatusCode != 400 {
-		t.Fatalf("Shop from the staff client: %d", res.StatusCode)
-	}
+	// Sign in with Shop only at tenant pools (the storefront is their only login client)
 	if res := e.get("/oidc/platform/login/shop?id=x"); res.StatusCode != 404 {
 		t.Fatalf("Shop at the platform pool: %d", res.StatusCode)
 	}
 	// suspended merchant: Sign in with Shop refuses at the start
 	_ = e.iss.SetMerchantSuspended(ctx, m, true)
-	_, c = pkce()
-	id, _ = e.requestAt(p, "storefront", c)
+	_, c := pkce()
+	id, _ := e.requestAt(p, "storefront", c)
 	if res := e.get("/oidc/" + p + "/login/shop?id=" + id); res.StatusCode != 403 {
 		t.Fatalf("Shop while suspended: %d", res.StatusCode)
 	}

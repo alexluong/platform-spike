@@ -305,10 +305,9 @@ func oidcpoolConfig() (oidcpool.Config, error) {
 	return oidcpool.Config{
 		PublicURL: public, InternalURL: env("INTERNAL_URL", "http://localhost:"+env("PORT", "8098")),
 		Secret: os.Getenv("ISSUER_SECRET"), Audience: env("API_AUDIENCE", "platform-api"),
-		LoginClientID: env("LOGIN_CLIENT_ID", "platform-cli"), StaffClientID: env("STAFF_CLIENT_ID", "merchant-admin"),
-		ShopperClient: env("CUSTOMER_CLIENT_ID", "storefront"),
-		RedirectURIs:  strings.Split(env("DRIVER_REDIRECT_URI", "http://127.0.0.1/callback"), ","),
-		AccessTTL:     access, RefreshTTL: refresh,
+		LoginClientID: env("LOGIN_CLIENT_ID", "platform-cli"), ShopperClient: env("CUSTOMER_CLIENT_ID", "storefront"),
+		RedirectURIs: strings.Split(env("DRIVER_REDIRECT_URI", "http://127.0.0.1/callback"), ","),
+		AccessTTL:    access, RefreshTTL: refresh,
 	}, nil
 }
 

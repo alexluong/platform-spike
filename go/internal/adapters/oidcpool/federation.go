@@ -128,7 +128,7 @@ func (s *Issuer) fedStart(w http.ResponseWriter, r *http.Request) {
 	}
 	id := r.URL.Query().Get("id")
 	clientID, pending := s.pendingRequest(r.Context(), p.ID, id)
-	if !pending || s.loginGroup(p, clientID) != groupCustomers {
+	if !pending || !s.isLoginClient(p, clientID) {
 		fedError(w, 400, "invalid_auth_request")
 		return
 	}
@@ -217,9 +217,9 @@ func (s *Issuer) fedCallback(w http.ResponseWriter, r *http.Request) {
 		// Find or create the tenant identity linked to this shop subject: one per (pool, shop sub),
 		// never matched by email (a local customer with the same email stays separate).
 		var disabled bool
-		if err := tx.QueryRow(ctx, `INSERT INTO idp_users(id, pool_id, user_group, upstream_pool, upstream_sub) VALUES ($1,$2,$3,'shop',$4)
+		if err := tx.QueryRow(ctx, `INSERT INTO idp_users(id, pool_id, upstream_pool, upstream_sub) VALUES ($1,$2,'shop',$3)
 			ON CONFLICT (pool_id, upstream_pool, upstream_sub) DO UPDATE SET upstream_sub=EXCLUDED.upstream_sub RETURNING id, disabled_at IS NOT NULL`,
-			db.NewID("idu"), p.ID, groupCustomers, claims.Subject).Scan(&uid, &disabled); err != nil {
+			db.NewID("idu"), p.ID, claims.Subject).Scan(&uid, &disabled); err != nil {
 			return err
 		}
 		// A linked identity the merchant disabled stays disabled, whatever Shop says.

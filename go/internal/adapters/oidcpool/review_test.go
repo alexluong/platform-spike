@@ -74,7 +74,7 @@ func TestCrossPoolRowsRefused(t *testing.T) {
 	ctx := context.Background()
 	m1, p1 := e.merchant()
 	_, p2 := e.merchant()
-	sub := e.tenantUser(m1, "customer", uniq("c"), "pw")
+	sub := e.tenantCustomer(m1, uniq("c"), "pw")
 	uid := strings.TrimPrefix(sub, p1+":")
 
 	// a refresh token of pool 2 for pool 1's user
@@ -176,7 +176,7 @@ func TestCodeRefusedAfterSuspension(t *testing.T) {
 	ctx := context.Background()
 	m, p := e.merchant()
 	email := uniq("c")
-	e.tenantUser(m, "customer", email, "pw")
+	e.tenantCustomer(m, email, "pw")
 	v, c := pkce()
 	code, st := e.codeAt(p, "storefront", email, "pw", c)
 	if code == "" {

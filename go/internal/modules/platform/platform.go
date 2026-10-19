@@ -74,17 +74,16 @@ func (m *Module) createMerchant(ctx context.Context, r *core.Req) (any, error) {
 		return nil, core.BadInput("name and ownerUserId are required")
 	}
 	var kind, subject string
-	var home *string
 	var memberships int
-	err := r.Tx.QueryRow(ctx, `SELECT kind, home_merchant_id, coalesce(idp_subject,''), (SELECT count(*) FROM memberships WHERE user_id=u.id)
-		FROM users u WHERE id=$1 FOR UPDATE`, in.OwnerUserID).Scan(&kind, &home, &subject, &memberships)
+	err := r.Tx.QueryRow(ctx, `SELECT kind, coalesce(idp_subject,''), (SELECT count(*) FROM memberships WHERE user_id=u.id)
+		FROM users u WHERE id=$1 FOR UPDATE`, in.OwnerUserID).Scan(&kind, &subject, &memberships)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, core.E(http.StatusBadRequest, "invalid_input", "owner user not found")
 	} else if err != nil {
 		return nil, err
 	}
-	if kind != string(perm.KindUser) || home != nil {
-		return nil, core.BadInput("owner must be a merchant user (a platform account)")
+	if kind != string(perm.KindUser) {
+		return nil, core.BadInput("owner must be a merchant user")
 	}
 	if memberships > 0 && !m.MultiMerchant {
 		return nil, core.Conflict("already_member")

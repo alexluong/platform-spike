@@ -61,7 +61,6 @@ services:
       ISSUER_SECRET: ${ISSUER_SECRET:-h2-dev-issuer-secret-0123456789abcdef}
       API_AUDIENCE: platform-api
       LOGIN_CLIENT_ID: platform-cli
-      STAFF_CLIENT_ID: merchant-admin
       CUSTOMER_CLIENT_ID: storefront
       # Loopback: any port matches (RFC 8252). 127.0.0.1, not localhost: cs-ws's dev proxy
       # rewrites localhost in redirects on ports 8090+.

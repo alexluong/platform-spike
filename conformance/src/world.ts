@@ -262,9 +262,9 @@ export async function merchantWithStore(): Promise<{ m: MerchantWorld; s: Store 
 
 export const multiPool = driver.features?.includes('multi-pool') ?? false
 
-/** A merchant's tenant-pool identity (SPEC §16.4): `user` = its staff, `customer` = its customer. */
-export interface TenantActor extends Actor {
-  kind: 'user' | 'customer'
+/** A merchant's tenant customer (SPEC §16.4, v4.1: tenant pools hold customers only). */
+export interface TenantCustomer extends Actor {
+  kind: 'customer'
   merchantId: string
 }
 
@@ -274,13 +274,13 @@ function needDriver<K extends 'loginTenant' | 'loginWithShop'>(method: K): NonNu
   return fn.bind(driver) as NonNullable<(typeof driver)[K]>
 }
 
-/** Tenant-pool login through the driver (rejects when the pool refuses). */
-export function loginTenant(merchantId: string, kind: TenantActor['kind'], email: string, password: string): Promise<string> {
-  return needDriver('loginTenant')(merchantId, kind, email, password)
+/** Tenant-pool (customer) login through the driver (rejects when the pool refuses). */
+export function loginTenant(merchantId: string, email: string, password: string): Promise<string> {
+  return needDriver('loginTenant')(merchantId, email, password)
 }
 
-export function reloginTenant(who: Pick<TenantActor, 'merchantId' | 'kind' | 'email' | 'password'>): Promise<string> {
-  return loginTenant(who.merchantId, who.kind, who.email, who.password)
+export function reloginTenant(who: Pick<TenantCustomer, 'merchantId' | 'email' | 'password'>): Promise<string> {
+  return loginTenant(who.merchantId, who.email, who.password)
 }
 
 /** "Sign in with Shop" at `merchantId` (SPEC §16.5): a token issued by the merchant's tenant pool. */
@@ -288,31 +288,37 @@ export function loginWithShop(merchantId: string, buyer: Pick<Actor, 'email' | '
   return needDriver('loginWithShop')(merchantId, buyer.email, buyer.password)
 }
 
-/** `POST /api/_test/merchants/:mid/users` only (no login). */
-export async function createTenantUser(
+/** `POST /api/_test/merchants/:mid/users` (kind `customer`) only, no login. */
+export async function createTenantCustomer(
   merchantId: string,
-  kind: TenantActor['kind'],
   opts: { email?: string; password?: string; label?: string } = {},
 ): Promise<{ id: string; email: string; password: string }> {
-  const email = opts.email ?? newEmail(opts.label ?? `t-${kind}`)
+  const email = opts.email ?? newEmail(opts.label ?? 't-customer')
   const password = opts.password ?? newPassword()
   const u = ok(
-    await anon.post<{ id: string; email: string }>(`/api/_test/merchants/${merchantId}/users`, { email, password, kind }, { 'x-test-secret': env.testSecret }),
+    await anon.post<{ id: string; email: string }>(`/api/_test/merchants/${merchantId}/users`, { email, password, kind: 'customer' }, { 'x-test-secret': env.testSecret }),
     201,
   )
   return { id: String(u.id), email, password }
 }
 
-/** Identity in `merchantId`'s tenant pool, logged in there (SPEC §16.4). Staff start as members with no roles. */
-export async function newTenantUser(
-  merchantId: string,
-  kind: TenantActor['kind'],
-  opts: { email?: string; password?: string; label?: string } = {},
-): Promise<TenantActor> {
-  const label = opts.label ?? (kind === 'user' ? 'tstaff' : 'tcustomer')
-  const u = await createTenantUser(merchantId, kind, { ...opts, label })
-  const token = await loginTenant(merchantId, kind, u.email, u.password)
-  return { ...u, kind, merchantId, token, api: anon.as(token, label) }
+/** A customer in `merchantId`'s tenant pool, logged in there (SPEC §16.4). */
+export async function newTenantCustomer(merchantId: string, opts: { email?: string; password?: string; label?: string } = {}): Promise<TenantCustomer> {
+  const label = opts.label ?? 'tcustomer'
+  const u = await createTenantCustomer(merchantId, { ...opts, label })
+  const token = await loginTenant(merchantId, u.email, u.password)
+  return { ...u, kind: 'customer', merchantId, token, api: anon.as(token, label) }
+}
+
+/**
+ * Merchant staff (SPEC §16.2, v4.1): a platform account (core `user`, platform pool) made a member
+ * of `m` by its owner, optionally holding `roleId` at merchant scope.
+ */
+export async function newStaff(m: MerchantWorld, opts: { roleId?: string; email?: string; label?: string } = {}): Promise<Actor> {
+  const u = await newUser('user', { email: opts.email, label: opts.label ?? 'staff' })
+  ok(await m.owner.api.post(`/api/merchants/${m.id}/members`, { userId: u.id }), 201)
+  if (opts.roleId) await m.assign(u, opts.roleId)
+  return u
 }
 
 /** `GET /api/merchants/:mid/identity` (no auth) → the tenant issuer (SPEC §16.3). */

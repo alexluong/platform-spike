@@ -2,9 +2,10 @@
 -- * membership moves from users.merchant_id to a table, so a platform account can belong to
 --   several merchants (partners). Stacks that keep "one merchant per user" enforce it in the
 --   module (no tenant pools = MultiMerchant off), not in the schema.
--- * users.home_merchant_id: a principal that belongs to a merchant's own pool (tenant staff,
---   tenant customers, a merchant's customer record linked to a Shop account). NULL for
---   platform-level principals (staff, platform accounts, Shop accounts).
+-- * users.home_merchant_id: a principal that belongs to a merchant's own pool (its tenant
+--   customers, a merchant's customer record linked to a Shop account; SPEC v4.1: tenant pools
+--   hold customers only). NULL for platform-level principals (platform staff, platform accounts
+--   incl. merchant staff, Shop accounts).
 -- * users.shop_account_id: a merchant's customer record linked to a Shop account. Its
 --   idp_subject is NULL until the buyer signs in with Shop at that merchant.
 -- * merchants.pool_ready: false while an adapter that provisions the tenant pool after the

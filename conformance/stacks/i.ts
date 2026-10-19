@@ -2,8 +2,8 @@
 // SPEC §10, §16. features: ['multi-pool'] opts into tests/multi-pool.test.ts (SPEC §16.6).
 //
 // Pools: workforce instance (platform staff), platform instance with orgs `accounts` (merchant
-// owners, partners) and `shop` (Shop buyers), one instance per merchant with orgs `staff` and
-// `customers`. The driver never talks to Zitadel directly: the app is the gateway. Every pool has
+// owners, staff and partners) and `shop` (Shop buyers), one instance per merchant with org
+// `customers` (SPEC v4.1: tenant pools hold customers only). The driver never talks to Zitadel directly: the app is the gateway. Every pool has
 // its own host, http://<label>.<ID_DOMAIN>:8096 (default ID_DOMAIN cs.internal: gw DNS → cs-ws),
 // which is also its issuer; the app maps the host to the instance (x-zitadel-instance-host).
 // On those hosts /oauth/v2/* etc. reach Zitadel, and /ui/v2/login/* is the app's headless
@@ -152,10 +152,10 @@ interface PoolIdentity {
   status: string
 }
 
-async function tenant(merchantId: string, org: 'staff' | 'customers'): Promise<Target> {
+async function tenant(merchantId: string): Promise<Target> {
   const id = await jsonOrThrow<PoolIdentity>(await get(`${baseUrl}/api/merchants/${encodeURIComponent(merchantId)}/identity`), 'identity')
-  if (id.status !== 'active' || !id.orgs[org]) throw new Error(`merchant ${merchantId}: pool ${id.status}`)
-  return { issuer: id.issuer.replace(/\/$/, ''), clientId: id.clientId, projectId: id.projectId, orgId: id.orgs[org]! }
+  if (id.status !== 'active' || !id.orgs.customers) throw new Error(`merchant ${merchantId}: pool ${id.status}`)
+  return { issuer: id.issuer.replace(/\/$/, ''), clientId: id.clientId, projectId: id.projectId, orgId: id.orgs.customers }
 }
 
 const driver: StackDriver = {
@@ -203,9 +203,9 @@ const driver: StackDriver = {
     }
   },
 
-  async loginTenant(merchantId, kind, email, password) {
+  async loginTenant(merchantId, email, password) {
     const cfg = await config()
-    return passwordLogin(await tenant(merchantId, kind === 'user' ? 'staff' : 'customers'), cfg.redirectUri, email, password)
+    return passwordLogin(await tenant(merchantId), cfg.redirectUri, email, password)
   },
 
   loginWithShop(merchantId, shopEmail, shopPassword) {
@@ -216,7 +216,7 @@ const driver: StackDriver = {
 async function shopLoginOnce(merchantId: string, shopEmail: string, shopPassword: string): Promise<string> {
   {
     const cfg = await config()
-    const t = await tenant(merchantId, 'customers')
+    const t = await tenant(merchantId)
     const s = await authorize(t, cfg.redirectUri)
     // 1. The merchant pool's login UI starts the Shop IdP intent → platform instance authorize URL.
     const { authUrl } = await jsonOrThrow<{ authUrl: string }>(await post(`${t.issuer}/ui/v2/login/idp`, { authRequest: s.authRequest }), 'start Sign in with Shop')

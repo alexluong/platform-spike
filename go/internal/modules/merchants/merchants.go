@@ -59,13 +59,11 @@ func (m *Module) identity(ctx context.Context, r *core.Req) (any, error) {
 	return out, err
 }
 
-// CanJoin: whether user (already locked by the caller) may become a member of mid. Tenant staff
-// belong to their own merchant only (SPEC §16.2: 404 elsewhere); one merchant per user unless
-// multiMerchant.
+// CanJoin: whether user (already locked by the caller) may become a member of mid: a merchant
+// user (a platform account), not yet a member; one merchant per user unless multiMerchant.
 func CanJoin(ctx context.Context, q pgx.Tx, userID, mid string, multiMerchant bool) error {
 	var kind string
-	var home *string
-	err := q.QueryRow(ctx, `SELECT kind, home_merchant_id FROM users WHERE id=$1 FOR UPDATE`, userID).Scan(&kind, &home)
+	err := q.QueryRow(ctx, `SELECT kind FROM users WHERE id=$1 FOR UPDATE`, userID).Scan(&kind)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return core.ErrNotFound
 	} else if err != nil {
@@ -73,9 +71,6 @@ func CanJoin(ctx context.Context, q pgx.Tx, userID, mid string, multiMerchant bo
 	}
 	if kind != string(perm.KindUser) {
 		return core.BadInput("only merchant users can be members")
-	}
-	if home != nil && *home != mid {
-		return core.ErrNotFound // another merchant's own staff: nobody here
 	}
 	var mine, any bool
 	if err := q.QueryRow(ctx, `SELECT coalesce(bool_or(merchant_id=$2), false), count(*) > 0 FROM memberships WHERE user_id=$1`, userID, mid).Scan(&mine, &any); err != nil {

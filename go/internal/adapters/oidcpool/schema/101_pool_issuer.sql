@@ -17,21 +17,19 @@ CREATE TABLE idp_pools (
 );
 INSERT INTO idp_pools(id, kind) VALUES ('workforce','workforce'), ('platform','platform'), ('shop','shop');
 
--- Users. user_group keeps a tenant pool's staff and customers apart ('staff' | 'customers');
--- the platform-level pools have one group ('default'). Password users have an email and a hash;
+-- Users (a tenant pool holds the merchant's customers only, SPEC v4.1). Password users have an email and a hash;
 -- users federated from an upstream pool (Sign in with Shop) have upstream_pool/upstream_sub and no
 -- password. The token `sub` is id; the app sees "<pool>:<id>" (identity port subject).
 CREATE TABLE idp_users (
   id            text PRIMARY KEY,
   pool_id       text NOT NULL REFERENCES idp_pools(id),
-  user_group    text NOT NULL,
   email         text,
   password_hash text,                        -- PHC string, argon2id
   upstream_pool text,
   upstream_sub  text,
   disabled_at   timestamptz,
   created_at    timestamptz NOT NULL DEFAULT now(),
-  UNIQUE (pool_id, user_group, email),
+  UNIQUE (pool_id, email),
   UNIQUE (pool_id, upstream_pool, upstream_sub),
   CHECK ((password_hash IS NOT NULL AND email IS NOT NULL) OR upstream_sub IS NOT NULL)
 );

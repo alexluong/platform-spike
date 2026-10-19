@@ -72,9 +72,9 @@ type TenantPools interface {
 	// PoolIdentity: what a storefront or admin UI needs to start a login at the merchant's pool
 	// (GET /api/merchants/:mid/identity); at least {"issuer"}. ErrNotFound when it has none yet.
 	PoolIdentity(ctx context.Context, merchantID string) (map[string]any, error)
-	// CreateTenantUser creates a password identity in the merchant's pool: kind user = its staff,
-	// customer = its customers. Returns the subject its tokens map to (test mode only).
-	CreateTenantUser(ctx context.Context, merchantID, email, password, kind string) (subject string, err error)
+	// CreateTenantCustomer creates a password customer identity in the merchant's pool (tenant
+	// pools hold customers only, SPEC v4.1). Returns the subject its tokens map to (test mode only).
+	CreateTenantCustomer(ctx context.Context, merchantID, email, password string) (subject string, err error)
 }
 
 // ShopLinker is the app's hook for "Sign in with Shop" (SPEC §16.5): after a Shop account

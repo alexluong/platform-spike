@@ -27,7 +27,7 @@ export default async function setup(): Promise<void> {
   // 1b. SPEC §16.4: a `multi-pool` driver must implement the tenant and Shop logins too.
   if (driver.features?.includes('multi-pool')) {
     for (const [name, probe] of [
-      ['loginTenant', () => driver.loginTenant?.('conformance-probe', 'user', 'conformance-probe@example.com', 'not-a-real-password')],
+      ['loginTenant', () => driver.loginTenant?.('conformance-probe', 'conformance-probe@example.com', 'not-a-real-password')],
       ['loginWithShop', () => driver.loginWithShop?.('conformance-probe', 'conformance-probe@example.com', 'not-a-real-password')],
     ] as const) {
       if (!driver[name]) {

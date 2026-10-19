@@ -86,7 +86,7 @@ func startIssuer(t *testing.T, pool *pgxpool.Pool, issuer string) *env {
 	}
 	iss, err := New(context.Background(), pool, Config{
 		PublicURL: issuer, InternalURL: base, Secret: "test-secret-0123456789abcdef-0123456789",
-		Audience: "platform-api", LoginClientID: "platform-cli", StaffClientID: "merchant-admin", ShopperClient: "storefront",
+		Audience: "platform-api", LoginClientID: "platform-cli", ShopperClient: "storefront",
 		RedirectURIs: []string{redirect}, AccessTTL: 15 * time.Minute, RefreshTTL: time.Hour,
 		OnShopLink: func(context.Context, string, string, string) error { return nil },
 	}, slog.New(slog.NewTextHandler(io.Discard, nil)))
@@ -494,7 +494,7 @@ func TestLoginTimingUnknownVsWrong(t *testing.T) {
 	e.user(email, "right")
 	measure := func(em string) time.Duration {
 		start := time.Now()
-		e.iss.authenticate(context.Background(), "platform", "default", em, "wrong")
+		e.iss.authenticate(context.Background(), "platform", em, "wrong")
 		return time.Since(start)
 	}
 	var known, unknown time.Duration
@@ -561,7 +561,7 @@ func TestMachineClientsInTx(t *testing.T) {
 		}
 		return errors.New("rollback")
 	})
-	if _, ok := e.iss.authenticate(ctx, "platform", "default", email, "pw"); ok {
+	if _, ok := e.iss.authenticate(ctx, "platform", email, "pw"); ok {
 		t.Fatal("rolled-back user can log in")
 	}
 

@@ -90,19 +90,19 @@ func (s *Issuer) CreateUser(ctx context.Context, email, password, kind string) (
 		return "", err
 	}
 	id := db.NewID("idu")
-	_, err = db.TxOr(ctx, s.db).Exec(ctx, `INSERT INTO idp_users(id, pool_id, user_group, email, password_hash) VALUES ($1,$2,$3,$4,$5)`,
-		id, poolID, groupDefault, normEmail(email), hashPassword(password))
+	_, err = db.TxOr(ctx, s.db).Exec(ctx, `INSERT INTO idp_users(id, pool_id, email, password_hash) VALUES ($1,$2,$3,$4)`,
+		id, poolID, normEmail(email), hashPassword(password))
 	return qualify(poolID, id), err
 }
 
 // authenticate returns the user id for a correct email + password of an enabled password user
-// in this pool and group. Federated users (no password) never match.
-func (s *Issuer) authenticate(ctx context.Context, poolID, group, email, password string) (string, bool) {
+// in this pool. Federated users (no password) never match.
+func (s *Issuer) authenticate(ctx context.Context, poolID, email, password string) (string, bool) {
 	var id string
 	var phc *string
 	var disabled bool
-	err := s.db.QueryRow(ctx, `SELECT id, password_hash, disabled_at IS NOT NULL FROM idp_users WHERE pool_id=$1 AND user_group=$2 AND email=$3`,
-		poolID, group, normEmail(email)).Scan(&id, &phc, &disabled)
+	err := s.db.QueryRow(ctx, `SELECT id, password_hash, disabled_at IS NOT NULL FROM idp_users WHERE pool_id=$1 AND email=$2`,
+		poolID, normEmail(email)).Scan(&id, &phc, &disabled)
 	if errors.Is(err, pgx.ErrNoRows) || (err == nil && phc == nil) {
 		checkPassword(dummyHash, password)
 		return "", false
@@ -124,21 +124,15 @@ func (s *Issuer) pendingRequest(ctx context.Context, poolID, id string) (string,
 	return clientID, err == nil
 }
 
-// group of the users a pending request may log in: the login client's group, or for a
-// federation client at the shop pool, the shop's buyers.
-func (s *Issuer) requestGroup(p *Pool, clientID string) string {
-	if g := s.loginGroup(p, clientID); g != "" {
-		return g
-	}
-	if p.Kind == kindShop && strings.HasPrefix(clientID, "fed_") {
-		return groupDefault
-	}
-	return ""
+// passwordLoginAllowed: a pending request of this client may log in with a password here: the
+// pool's login client, or a federation client at the shop pool (Sign in with Shop's upstream leg).
+func (s *Issuer) passwordLoginAllowed(p *Pool, clientID string) bool {
+	return s.isLoginClient(p, clientID) || (p.Kind == kindShop && strings.HasPrefix(clientID, "fed_"))
 }
 
 // handleLogin is the login step of a pool's code flow, headless (SPEC §10): /authorize redirects
 // to /oidc/<pool>/login?id=<auth request>; a UI would render a form. GET describes the form, POST
-// checks the password against this pool's users of the client's group, marks the request done and
+// checks the password against this pool's users, marks the request done and
 // answers with the code (op.AuthResponse), never via the library's callback endpoint. A suspended
 // tenant pool refuses (403).
 func (s *Issuer) handleLogin(w http.ResponseWriter, r *http.Request) {
@@ -164,8 +158,7 @@ func (s *Issuer) handleLogin(w http.ResponseWriter, r *http.Request) {
 	id, email, pw := r.PostForm.Get("id"), normEmail(r.PostForm.Get("email")), r.PostForm.Get("password")
 	ip := clientIP(r)
 	clientID, pending := s.pendingRequest(r.Context(), p.ID, id)
-	group := s.requestGroup(p, clientID)
-	if !pending || group == "" {
+	if !pending || !s.passwordLoginAllowed(p, clientID) {
 		core.WriteJSON(w, 400, map[string]string{"error": "invalid_auth_request"})
 		return
 	}
@@ -175,12 +168,12 @@ func (s *Issuer) handleLogin(w http.ResponseWriter, r *http.Request) {
 	}
 	// Each attempt takes a slot before the hash runs, so parallel guesses can't all pass the
 	// check before the first failure is counted; a success gives its slot back. Keys are per
-	// pool and group: the same email in two pools is two accounts.
+	// pool: the same email in two pools is two accounts.
 	tooMany := func() {
 		w.Header().Set("Retry-After", "60")
 		core.WriteJSON(w, 429, map[string]string{"error": "too_many_attempts"})
 	}
-	acct := "login:" + p.ID + "/" + group + ":" + email
+	acct := "login:" + p.ID + ":" + email
 	keys := []string{acct + "|" + ip, acct}
 	if !s.limits.allowIP(ip) || !s.limits.attempt(keys[0], maxFailsPerSource) {
 		tooMany()
@@ -191,7 +184,7 @@ func (s *Issuer) handleLogin(w http.ResponseWriter, r *http.Request) {
 		tooMany()
 		return
 	}
-	uid, ok := s.authenticate(r.Context(), p.ID, group, email, pw)
+	uid, ok := s.authenticate(r.Context(), p.ID, email, pw)
 	if !ok {
 		core.WriteJSON(w, 401, map[string]string{"error": "invalid_credentials"})
 		return

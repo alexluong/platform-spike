@@ -19,10 +19,10 @@ type Principal struct {
 	PlatformRole string // platform_admin | support
 	OwnerUserID  string // agents: the user who registered it
 	// MerchantIDs: a user's memberships (SPEC §16.2: a platform account may be a member of
-	// several merchants). Tenant staff have at most their own merchant.
+	// several merchants).
 	MerchantIDs []string
-	// HomeMerchantID: the merchant whose own pool holds this principal (tenant staff and
-	// customers, SPEC §16.1). "" for platform-level principals.
+	// HomeMerchantID: the merchant whose own pool holds this principal (its tenant customers,
+	// SPEC §16.1; staff are platform accounts). "" for platform-level principals.
 	HomeMerchantID string
 	// ShopAccountID: a merchant's customer record linked to this Shop account (SPEC §16.5).
 	ShopAccountID string

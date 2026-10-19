@@ -11,11 +11,12 @@ export interface StackDriver {
    */
   features?: string[]
   /**
-   * SPEC §16.4 (`multi-pool`): token from the merchant's tenant pool (its staff or its customers),
-   * through the stack's real login path. Rejects when the pool refuses (wrong password, another
-   * merchant's identity, merchant suspended).
+   * SPEC §16.4 (`multi-pool`): customer token from the merchant's tenant pool (v4.1: tenant pools
+   * hold customers only; staff are platform accounts and use loginUser), through the stack's real
+   * login path. Rejects when the pool refuses (wrong password, another pool's identity, merchant
+   * suspended).
    */
-  loginTenant?(merchantId: string, kind: 'user' | 'customer', email: string, password: string): Promise<string>
+  loginTenant?(merchantId: string, email: string, password: string): Promise<string>
   /**
    * SPEC §16.4/§16.5 (`multi-pool`): "Sign in with Shop". Log in at the merchant's tenant customers
    * pool with the Shop account as the upstream OIDC provider; the driver drives both legs and returns

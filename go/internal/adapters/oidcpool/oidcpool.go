@@ -49,7 +49,6 @@ type Config struct {
 	Secret        string // >= 32 chars: encrypts signing keys and upstream secrets, keys the library's crypto
 	Audience      string // the API: access tokens carry it as aud
 	LoginClientID string // first-party public client of the workforce, platform and shop pools
-	StaffClientID string // first-party public client of a tenant pool's staff (admin)
 	ShopperClient string // first-party public client of a tenant pool's customers (storefront)
 	RedirectURIs  []string
 	AccessTTL     time.Duration
@@ -167,7 +166,7 @@ func (s *Issuer) Verify(ctx context.Context, bearer string) (identity.Token, err
 		err = errors.New("wrong audience")
 	case cl.Subject == "":
 		err = errors.New("no subject")
-	case s.loginGroup(p, cl.ClientID) != "":
+	case s.isLoginClient(p, cl.ClientID):
 	case p.Kind == kindPlatform && cl.ClientID == cl.Subject && strings.HasPrefix(cl.Subject, "cli_"):
 	default:
 		err = fmt.Errorf("client %q not accepted for pool %s", cl.ClientID, p.ID)
@@ -197,22 +196,13 @@ func unverifiedIssuer(token string) (string, error) {
 	return c.Iss, nil
 }
 
-// loginGroup: the user group a first-party login client of this pool authenticates ("" = not a
-// login client here). Tenant pools: staff and customers through different clients.
-func (s *Issuer) loginGroup(p *Pool, clientID string) string {
+// isLoginClient: clientID is this pool's first-party login client (tenant pools: the storefront,
+// since they hold customers only; platform-level pools: LoginClientID).
+func (s *Issuer) isLoginClient(p *Pool, clientID string) bool {
 	if p.Kind == kindTenant {
-		switch clientID {
-		case s.cfg.StaffClientID:
-			return groupStaff
-		case s.cfg.ShopperClient:
-			return groupCustomers
-		}
-		return ""
+		return clientID == s.cfg.ShopperClient
 	}
-	if clientID == s.cfg.LoginClientID {
-		return groupDefault
-	}
-	return ""
+	return clientID == s.cfg.LoginClientID
 }
 
 // CreateClient (identity port): a machine client for an app or agent, in the platform pool, in
@@ -241,8 +231,8 @@ func (s *Issuer) DeleteClient(ctx context.Context, clientID string) error {
 func (s *Issuer) DriverConfig() map[string]any {
 	return map[string]any{
 		"idp": "oidcpool", "issuerBase": s.cfg.PublicURL + "/oidc/", "clientId": s.cfg.LoginClientID,
-		"staffClientId": s.cfg.StaffClientID, "customerClientId": s.cfg.ShopperClient,
-		"redirectUri": s.cfg.RedirectURIs[0], "audience": s.cfg.Audience,
+		"customerClientId": s.cfg.ShopperClient,
+		"redirectUri":      s.cfg.RedirectURIs[0], "audience": s.cfg.Audience,
 	}
 }
 

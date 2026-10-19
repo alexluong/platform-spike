@@ -7,8 +7,8 @@
 //   kind (platform → workforce, user → platform, customer → shop) holds the email
 //   (GET /api/_test/home-realm). A real UI knows
 //   its pool (staff console, merchant admin, Shop app).
-// - loginTenant: the merchant's issuer from GET /api/merchants/:mid/identity; staff log in through
-//   the `merchant-admin` client, customers through `storefront` (one pool, two user groups).
+// - loginTenant: the merchant's issuer from GET /api/merchants/:mid/identity; customers log in
+//   through `storefront` (SPEC v4.1: tenant pools hold customers only; staff are platform accounts).
 // - loginWithShop: storefront authorize at the tenant issuer → <issuer>/login/shop (the "Sign in
 //   with Shop" button, sets a binding cookie) → 302 to the shop pool's authorize → POST the shop
 //   login → 302 to <tenant issuer>/federation/shop/callback (with the cookie) → the app exchanges the
@@ -19,8 +19,8 @@ import type { StackDriver } from '../src/driver'
 import { env } from '../src/env'
 
 const baseUrl = process.env.APP_URL ?? `http://${env.host}:8098`
-/** stacks/h2/compose.yaml LOGIN_CLIENT_ID / STAFF_CLIENT_ID / CUSTOMER_CLIENT_ID / DRIVER_REDIRECT_URI */
-const clients = { platform: 'platform-cli', user: 'merchant-admin', customer: 'storefront' } as const
+/** stacks/h2/compose.yaml LOGIN_CLIENT_ID / CUSTOMER_CLIENT_ID / DRIVER_REDIRECT_URI */
+const clients = { platform: 'platform-cli', customer: 'storefront' } as const
 const redirectUri = 'http://127.0.0.1/callback'
 
 async function fail(what: string, res: Response): Promise<never> {
@@ -139,8 +139,8 @@ const driver: StackDriver = {
     if (!body.access_token) throw new Error('stack h2 client_credentials: no access_token')
     return body.access_token
   },
-  async loginTenant(merchantId, kind, email, password) {
-    return passwordLogin(await issuerOfMerchant(merchantId), clients[kind], email, password)
+  async loginTenant(merchantId, email, password) {
+    return passwordLogin(await issuerOfMerchant(merchantId), clients.customer, email, password)
   },
   async loginWithShop(merchantId, shopEmail, shopPassword) {
     const issuer = await issuerOfMerchant(merchantId)
